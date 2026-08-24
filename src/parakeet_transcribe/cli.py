@@ -79,7 +79,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--nemo-speech", dest="nemo_speech")
     parser.add_argument("--model")
     parser.add_argument("--diar-model", dest="diar_model")
-    parser.add_argument("--device", help="auto, cpu, cuda[:N], metal, or vulkan[:N]")
+    parser.add_argument("--device", help="auto, cpu, cuda[:N], metal, vulkan[:N], or gpu[:N]")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

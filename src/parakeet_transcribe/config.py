@@ -6,6 +6,7 @@ import configparser
 from dataclasses import dataclass, fields
 import os
 from pathlib import Path
+import re
 from typing import Any, Mapping
 
 from .errors import ConfigurationError
@@ -88,11 +89,12 @@ def _coerce_settings(values: Mapping[str, Any]) -> Settings:
     if invalid or not formats:
         raise ConfigurationError(f"Invalid output formats: {', '.join(sorted(invalid)) or 'none'}")
 
-    device = str(values.get("device", "auto")).lower()
-    if device != "auto" and device != "cpu" and not (
-        device.startswith("cuda") or device.startswith("vulkan") or device == "metal"
-    ):
-        raise ConfigurationError(f"Unsupported device: {device}")
+    device = str(values.get("device", "auto")).strip().lower()
+    if re.fullmatch(r"(?:auto|cpu|metal|(?:cuda|vulkan|gpu)(?::\d+)?)", device) is None:
+        raise ConfigurationError(
+            f"Unsupported device: {device!r}; expected auto, cpu, cuda[:N], "
+            "metal, vulkan[:N], or gpu[:N]"
+        )
 
     workers = _as_int(values.get("workers", 1), "workers")
     if workers < 1:

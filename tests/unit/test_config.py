@@ -43,6 +43,14 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             load_settings(cli_values={"formats": "json,pdf"}, env={})
 
+    def test_validates_complete_device_syntax(self) -> None:
+        self.assertEqual(
+            load_settings(cli_values={"device": "cuda:0"}, env={}).device,
+            "cuda:0",
+        )
+        with self.assertRaisesRegex(ConfigurationError, "expected auto, cpu"):
+            load_settings(cli_values={"device": "cuda[:0] # cpu, cuda"}, env={})
+
 
 if __name__ == "__main__":
     unittest.main()
