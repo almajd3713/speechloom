@@ -4,11 +4,19 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from parakeet_transcribe.cli import build_parser
 from parakeet_transcribe.config import load_settings
 from parakeet_transcribe.errors import ConfigurationError
 
 
 class SettingsTests(unittest.TestCase):
+    def test_transcribe_accepts_output_directory(self) -> None:
+        args = build_parser().parse_args(
+            ["transcribe", "recording.wav", "--output-dir", "custom-output"]
+        )
+
+        self.assertEqual(args.output_dir, "custom-output")
+
     def test_precedence_cli_then_environment_then_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.ini"

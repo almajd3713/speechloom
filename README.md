@@ -52,6 +52,7 @@ Transcribe one or more files:
 ```bash
 parakeet-transcribe --config config.ini transcribe recording.mp4
 parakeet-transcribe --config config.ini transcribe recordings/ --recursive --workers 2
+parakeet-transcribe --config config.ini transcribe recording.mp4 --output-dir ./output
 ```
 
 Inspect a completed job:

@@ -34,7 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe = subparsers.add_parser("transcribe", help="Transcribe one or more media inputs")
     transcribe.add_argument("inputs", nargs="+", type=Path)
     _add_runtime_options(transcribe)
-    transcribe.add_argument("-o", "--output-dir")
+    transcribe.add_argument(
+        "-o",
+        "--output-dir",
+        metavar="DIRECTORY",
+        help="Write transcription job directories here (default: transcripts)",
+    )
     transcribe.add_argument("--formats", help="Comma-separated: json,txt,srt,vtt")
     transcribe.add_argument("--audio-stream", type=int, help="FFmpeg audio stream index")
     transcribe.add_argument("--recursive", action="store_true", help="Recurse into input directories")
