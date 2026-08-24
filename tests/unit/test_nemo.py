@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+from pathlib import Path
+import tempfile
+import unittest
+
+from parakeet_transcribe.nemo import NemoOptions, adapt_payload, transcribe
+from parakeet_transcribe.process import CommandResult
+
+
+class NemoAdapterTests(unittest.TestCase):
+    def test_adapts_riva_words_info_shape(self) -> None:
+        transcript = adapt_payload(
+            {
+                "transcript": "Привет, мир!",
+                "words_info": {
+                    "words": [
+                        {"word": "Привет", "start_time": 0.1, "end_time": 0.5, "confidence": 0.9},
+                        {"word": "мир!", "start_time": 0.6, "end_time": 1.0, "speaker_tag": 2},
+                    ]
+                },
+            },
+            duration=1.2,
+        )
+        self.assertEqual(transcript.text, "Привет, мир!")
+        self.assertEqual(transcript.words[1].speaker, 2)
+        self.assertIsNone(transcript.language)
+
+    def test_transcribe_builds_one_integrated_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "аудио.wav"
+            model = root / "model.gguf"
+            diar = root / "sortformer.gguf"
+            for path in (audio, model, diar):
+                path.write_bytes(b"fixture")
+            calls = []
+
+            def runner(argv, **kwargs):
+                calls.append(tuple(argv))
+                return CommandResult(
+                    tuple(argv), 0,
+                    '{"text":"Hello.","words":[{"text":"Hello.","start":0.0,"end":0.5,"speaker":1}]}',
+                    "",
+                )
+
+            transcript = transcribe(
+                audio,
+                NemoOptions("nemo-speech", model, "cuda:0", True, diar),
+                duration=1.0,
+                runner=runner,
+            )
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--word-times", calls[0])
+            self.assertIn("--diar-model", calls[0])
+            self.assertIn("cuda:0", calls[0])
+            self.assertEqual(transcript.words[0].speaker, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
