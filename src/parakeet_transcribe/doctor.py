@@ -71,6 +71,23 @@ def run_doctor(
             else Check("diar-model", "error", f"Diarization model not found: {diar_model}")
         )
 
+    if settings.translation_model:
+        translation_model = Path(settings.translation_model).expanduser()
+        checks.append(
+            Check(
+                "translation-model",
+                "ok",
+                str(translation_model.resolve()),
+                {"size": translation_model.stat().st_size},
+            )
+            if translation_model.is_file()
+            else Check(
+                "translation-model",
+                "error",
+                f"Translation model not found: {translation_model}",
+            )
+        )
+
     if _resolve_executable(settings.nemo_speech):
         result = runner([settings.nemo_speech, "doctor", "--json"], check=False)
         details = _maybe_json(result.stdout)
@@ -82,6 +99,21 @@ def run_doctor(
                 details,
             )
         )
+        if settings.translation_model:
+            translation_available = bool(
+                isinstance(details, dict)
+                and isinstance(details.get("features"), dict)
+                and details["features"].get("translation") is True
+            )
+            checks.append(
+                Check(
+                    "translation-runtime",
+                    "ok" if translation_available else "error",
+                    "NeMo runtime includes NMT support"
+                    if translation_available
+                    else "NeMo runtime lacks NMT support; rebuild it with --with-nmt",
+                )
+            )
         if model_path is not None:
             model_result = runner(
                 [settings.nemo_speech, "model", "info", str(model_path)],

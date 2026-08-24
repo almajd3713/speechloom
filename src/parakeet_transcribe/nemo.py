@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import tempfile
 from typing import Any, Callable, Iterable
 
 from .errors import InferenceError, ModelError, UnsupportedFeatureError
@@ -22,6 +23,15 @@ class NemoOptions:
     device: str = "auto"
     diarize: bool = False
     diar_model: Path | None = None
+
+
+@dataclass(frozen=True)
+class TranslationOptions:
+    executable: str
+    model: Path
+    source_language: str
+    target_language: str
+    device: str = "auto"
 
 
 def transcribe(
@@ -93,6 +103,56 @@ def transcribe_directory(
     if options.diarize and options.diar_model is not None:
         argv.extend(["--diar-model", str(options.diar_model)])
     return runner(argv, check=False)
+
+
+def translate_texts(
+    texts: list[str],
+    options: TranslationOptions,
+    *,
+    runner: Runner = run_command,
+) -> list[str]:
+    """Translate a batch in one native invocation so the NMT model loads once."""
+
+    if not options.model.is_file():
+        raise ModelError(f"Translation model does not exist: {options.model}")
+    normalized = [" ".join(text.split()) for text in texts]
+    if not normalized or any(not text for text in normalized):
+        raise InferenceError("Translation inputs must contain text")
+
+    with tempfile.TemporaryDirectory(prefix="parakeet-translation-") as temporary:
+        input_path = Path(temporary) / "segments.txt"
+        input_path.write_text("\n".join(normalized) + "\n", encoding="utf-8")
+        argv = [
+            options.executable,
+            "translate",
+            "--model", str(options.model),
+            "--from", options.source_language,
+            "--to", options.target_language,
+            "--input", str(input_path),
+            "--json",
+        ]
+        if options.device != "auto":
+            argv.extend(["--device", options.device])
+        try:
+            result = runner(argv)
+        except CommandFailed as exc:
+            raise _map_translation_failure(exc.result) from exc
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise InferenceError("NeMo produced malformed translation JSON") from exc
+    if not isinstance(payload, list) or len(payload) != len(normalized):
+        raise InferenceError(
+            f"NeMo returned {len(payload) if isinstance(payload, list) else 'invalid'} "
+            f"translations for {len(normalized)} inputs"
+        )
+    translated: list[str] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict) or not str(item.get("text", "")).strip():
+            raise InferenceError(f"NeMo translation result {index} has no text")
+        translated.append(" ".join(str(item["text"]).split()))
+    return translated
 
 
 def adapt_payload(payload: Any, *, duration: float | None = None) -> Transcript:
@@ -227,6 +287,16 @@ def _map_native_result(result: CommandResult) -> InferenceError:
     if code == 4:
         return UnsupportedFeatureError(f"NeMo feature is unsupported: {diagnostic}")
     return InferenceError(f"NeMo transcription failed: {diagnostic}", native_exit_code=code)
+
+
+def _map_translation_failure(result: CommandResult) -> InferenceError:
+    code = result.returncode
+    diagnostic = result.stderr.strip() or result.stdout.strip() or "unknown translation failure"
+    if code == 3:
+        return ModelError(f"NeMo translation model is missing: {diagnostic}")
+    if code == 4:
+        return UnsupportedFeatureError(f"NeMo translation is unsupported: {diagnostic}")
+    return InferenceError(f"NeMo translation failed: {diagnostic}", native_exit_code=code)
 
 
 def _validate_options(options: NemoOptions) -> None:

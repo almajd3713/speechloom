@@ -5,6 +5,7 @@ set -euo pipefail
 runtime_ref="4f9676226f667d14608487df744f375db87127f8"
 runtime_url="https://github.com/NVIDIA/NeMo-Speech.cpp.git"
 backend="cpu"
+with_nmt="OFF"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_prefix="${project_root}/.runtime/nemo-speech"
 if [[ -x "${project_root}/.runtime/tools/bin/cmake" ]]; then
@@ -12,7 +13,7 @@ if [[ -x "${project_root}/.runtime/tools/bin/cmake" ]]; then
 fi
 
 usage() {
-    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY]"
+    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--with-nmt]"
     echo "Relative prefixes are resolved from the repository root."
 }
 
@@ -27,6 +28,10 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { echo "--prefix requires a value" >&2; exit 2; }
             install_prefix="$2"
             shift 2
+            ;;
+        --with-nmt)
+            with_nmt="ON"
+            shift
             ;;
         -h|--help)
             usage
@@ -98,8 +103,8 @@ echo "Building ${preset}..."
     scripts/build_sentencepiece_static.sh
     scripts/configure.sh "$preset" \
         -DNEMO_SPEECH_BUILD_TTS=OFF \
-        -DNEMO_SPEECH_BUILD_NMT=OFF \
-        -DNEMO_SPEECH_WITH_NMT=OFF \
+        -DNEMO_SPEECH_BUILD_NMT="$with_nmt" \
+        -DNEMO_SPEECH_WITH_NMT="$with_nmt" \
         -DNEMO_SPEECH_BUILD_HTTP=OFF
     cmake --build --preset "$preset"
     cmake --install "build/${preset}" --prefix "$install_prefix"

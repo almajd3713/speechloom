@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..schema import Transcript
+from ..schema import Transcript, Translation
 
 
 def render_text(transcript: Transcript) -> str:
@@ -23,6 +23,18 @@ def render_text(transcript: Transcript) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_translation_text(translation: Translation) -> str:
+    if not translation.segments:
+        return ""
+    if not any(segment.speaker is not None for segment in translation.segments):
+        return " ".join(segment.text for segment in translation.segments) + "\n"
+    lines = []
+    for segment in translation.segments:
+        label = segment.speaker if segment.speaker is not None else "unknown"
+        lines.append(f"Speaker {label}: {segment.text}")
+    return "\n".join(lines) + "\n"
+
+
 def _join_tokens(tokens: list[str]) -> str:
     result = ""
     for token in tokens:
@@ -31,4 +43,3 @@ def _join_tokens(tokens: list[str]) -> str:
         else:
             result += " " + token
     return result
-

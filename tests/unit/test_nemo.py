@@ -4,7 +4,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from parakeet_transcribe.nemo import NemoOptions, adapt_payload, transcribe
+from parakeet_transcribe.nemo import (
+    NemoOptions,
+    TranslationOptions,
+    adapt_payload,
+    transcribe,
+    translate_texts,
+)
 from parakeet_transcribe.process import CommandResult
 
 
@@ -56,6 +62,39 @@ class NemoAdapterTests(unittest.TestCase):
             self.assertIn("--diar-model", calls[0])
             self.assertIn("cuda:0", calls[0])
             self.assertEqual(transcript.words[0].speaker, 1)
+
+    def test_translate_texts_uses_one_structured_batch_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            model = Path(directory) / "translate.gguf"
+            model.write_bytes(b"model")
+            calls = []
+
+            def runner(argv, **kwargs):
+                calls.append(tuple(argv))
+                input_path = Path(argv[argv.index("--input") + 1])
+                inputs = input_path.read_text(encoding="utf-8").splitlines()
+                payload = [
+                    {
+                        "input": text,
+                        "text": f"English {index}",
+                        "source_language": "ru",
+                        "target_language": "en",
+                    }
+                    for index, text in enumerate(inputs)
+                ]
+                return CommandResult(tuple(argv), 0, __import__("json").dumps(payload), "")
+
+            translated = translate_texts(
+                ["Привет, мир!", "Как дела?"],
+                TranslationOptions("nemo-speech", model, "ru", "en", "cuda:0"),
+                runner=runner,
+            )
+
+            self.assertEqual(translated, ["English 0", "English 1"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][:2], ("nemo-speech", "translate"))
+            self.assertIn("--input", calls[0])
+            self.assertIn("cuda:0", calls[0])
 
 
 if __name__ == "__main__":

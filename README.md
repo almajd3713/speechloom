@@ -36,6 +36,17 @@ For CUDA:
   --prefix .runtime/nemo-speech-cuda
 ```
 
+To enable local translation, build the runtime with NMT and convert the pinned
+Riva Translate model (the conversion needs about 16 GiB free):
+
+```bash
+./scripts/bootstrap_runtime.sh \
+  --backend cuda \
+  --prefix .runtime/nemo-speech-cuda \
+  --with-nmt
+./scripts/bootstrap_translation_model.sh
+```
+
 Copy `config.example.ini` and set `nemo_speech`, `model`, and `device` for the
 runtime you built.
 
@@ -54,6 +65,18 @@ parakeet-transcribe --config config.ini transcribe recording.mp4
 parakeet-transcribe --config config.ini transcribe recordings/ --recursive --workers 2
 parakeet-transcribe --config config.ini transcribe recording.mp4 --output-dir ./output
 ```
+
+For Russian transcription plus English translation, set these values in
+`config.ini`:
+
+```ini
+translation_model = .runtime/models/riva-translate-4b-instruct-v2.q8_0.gguf
+source_language = ru
+translate_to = en
+```
+
+The original files remain `transcript.*` and `subtitles.*`. Translated files are
+named `translation.en.*` and `subtitles.en.*`.
 
 Inspect a completed job:
 
@@ -88,5 +111,5 @@ Real-runtime tests are enabled by setting `PARAKEET_TEST_NEMO`,
 
 ## License
 
-The project is licensed under Apache-2.0. The Parakeet model is distributed
-separately under CC BY 4.0.
+The project is licensed under Apache-2.0. Models are distributed separately
+under their respective licenses.

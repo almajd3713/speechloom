@@ -11,6 +11,7 @@ from .errors import InferenceError
 
 
 SCHEMA_VERSION = 1
+TRANSLATION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,75 @@ class Transcript:
         return cls.from_dict(payload)
 
 
+@dataclass(frozen=True)
+class TranslatedSegment:
+    source_text: str
+    text: str
+    start: float
+    end: float
+    speaker: int | str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TranslatedSegment":
+        return cls(
+            source_text=str(data["source_text"]),
+            text=str(data["text"]),
+            start=float(data["start"]),
+            end=float(data["end"]),
+            speaker=data.get("speaker"),
+        )
+
+    def as_subtitle_segment(self) -> Segment:
+        return Segment(text=self.text, start=self.start, end=self.end, speaker=self.speaker)
+
+
+@dataclass
+class Translation:
+    source_language: str
+    target_language: str
+    segments: list[TranslatedSegment]
+    provenance: dict[str, Any] = field(default_factory=dict)
+    schema_version: int = TRANSLATION_SCHEMA_VERSION
+
+    def validate(self) -> None:
+        if self.schema_version != TRANSLATION_SCHEMA_VERSION:
+            raise InferenceError(f"Unsupported translation schema version: {self.schema_version}")
+        previous_end = -1.0
+        for index, segment in enumerate(self.segments):
+            if not segment.source_text.strip() or not segment.text.strip():
+                raise InferenceError(f"Translation segment {index} has empty text")
+            if segment.start < 0 or segment.end <= segment.start:
+                raise InferenceError(f"Translation segment {index} has invalid timestamps")
+            if segment.start < previous_end - 0.001:
+                raise InferenceError(f"Translation segment {index} overlaps the previous segment")
+            previous_end = segment.end
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Translation":
+        translation = cls(
+            schema_version=int(data.get("schema_version", TRANSLATION_SCHEMA_VERSION)),
+            source_language=str(data["source_language"]),
+            target_language=str(data["target_language"]),
+            segments=[TranslatedSegment.from_dict(item) for item in data.get("segments", [])],
+            provenance=dict(data.get("provenance", {})),
+        )
+        translation.validate()
+        return translation
+
+    @classmethod
+    def load(cls, path: Path) -> "Translation":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise InferenceError(f"Could not read translation JSON: {path}") from exc
+        if not isinstance(payload, dict):
+            raise InferenceError("Translation JSON must be an object")
+        return cls.from_dict(payload)
+
+
 def _optional_float(value: Any) -> float | None:
     if value is None or value == "":
         return None
@@ -122,4 +192,3 @@ def _optional_string(value: Any) -> str | None:
     if value is None or value == "":
         return None
     return str(value)
-

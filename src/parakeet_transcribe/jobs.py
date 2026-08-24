@@ -21,14 +21,22 @@ from .errors import ArtifactConflictError, ConfigurationError, InferenceError, P
 from .media import can_passthrough_wav, normalize_audio, probe_media, select_audio_stream
 from .nemo import (
     NemoOptions,
+    TranslationOptions,
     adapt_payload,
     map_native_failure,
     transcribe,
     transcribe_directory,
+    translate_texts,
 )
 from .process import CommandResult, run_command
-from .renderers import build_segments, render_srt, render_text, render_vtt
-from .schema import SCHEMA_VERSION, Transcript
+from .renderers import (
+    build_segments,
+    render_srt,
+    render_text,
+    render_translation_text,
+    render_vtt,
+)
+from .schema import SCHEMA_VERSION, Transcript, TranslatedSegment, Translation
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -46,6 +54,9 @@ class PipelineOptions:
     audio_stream: int | None = None
     diarize: bool = False
     diar_model: Path | None = None
+    translation_model: Path | None = None
+    source_language: str | None = None
+    translate_to: str | None = None
     keep_audio: bool = False
     resume: bool = True
     force: bool = False
@@ -69,6 +80,7 @@ class PreparedJob:
     source_identity: dict[str, Any]
     model_identity: dict[str, Any]
     diar_identity: dict[str, Any] | None
+    translation_identity: dict[str, Any] | None
     job_id: str
     job_dir: Path
     work_dir: Path
@@ -80,12 +92,24 @@ class PreparedJob:
     passthrough: bool
     started: float
     transcript: Transcript | None = None
+    translation: Translation | None = None
 
 
 class Pipeline:
     def __init__(self, options: PipelineOptions, *, runner: Callable[..., CommandResult] = run_command) -> None:
         if options.workers < 1:
             raise ConfigurationError("workers must be at least 1")
+        translation_values = (
+            options.translation_model,
+            options.source_language,
+            options.translate_to,
+        )
+        if any(translation_values) and not all(translation_values):
+            raise ConfigurationError(
+                "translation_model, source_language, and translate_to must be configured together"
+            )
+        if options.source_language and options.source_language == options.translate_to:
+            raise ConfigurationError("source_language and translate_to must be different")
         self.options = options
         self.runner = runner
         self._identity_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
@@ -115,6 +139,8 @@ class Pipeline:
                 prepared.manifest.setdefault("timings", {})["inference_seconds"] = (
                     time.monotonic() - step_started
                 )
+            self._commit_transcript(prepared)
+            self._translate_jobs([prepared])
             return self._complete(prepared)
         except KeyboardInterrupt:
             if prepared is not None:
@@ -179,6 +205,8 @@ class Pipeline:
                 if isinstance(prepared_or_result, JobResult):
                     result = prepared_or_result
                 elif prepared_or_result.transcript is not None:
+                    self._commit_transcript(prepared_or_result)
+                    self._translate_jobs([prepared_or_result])
                     result = self._complete(prepared_or_result)
                 else:
                     pending.append(prepared_or_result)
@@ -232,6 +260,7 @@ class Pipeline:
     ) -> dict[str, JobResult]:
         results: dict[str, JobResult] = {}
         native_error = map_native_failure(command_result) if command_result.returncode else None
+        completed_asr: list[PreparedJob] = []
         for prepared, native_stem in staged:
             result_path = output_dir / f"{native_stem}.json"
             if not result_path.is_file():
@@ -246,6 +275,17 @@ class Pipeline:
                 timings = prepared.manifest.setdefault("timings", {})
                 timings["batch_inference_seconds"] = elapsed
                 timings["batch_size"] = len(staged)
+                self._commit_transcript(prepared)
+                completed_asr.append(prepared)
+            except Exception as exc:
+                results[str(prepared.source)] = self._failed_result(prepared.source, exc, prepared)
+        try:
+            self._translate_jobs(completed_asr)
+        except Exception as exc:
+            results.update(self._fail_prepared(completed_asr, exc))
+            return results
+        for prepared in completed_asr:
+            try:
                 results[str(prepared.source)] = self._complete(prepared)
             except Exception as exc:
                 results[str(prepared.source)] = self._failed_result(prepared.source, exc, prepared)
@@ -265,6 +305,11 @@ class Pipeline:
         source_identity = self._identity(source)
         model_identity = self._identity(self.options.model)
         diar_identity = self._identity(self.options.diar_model) if self.options.diar_model else None
+        translation_identity = (
+            self._identity(self.options.translation_model)
+            if self.options.translation_model is not None
+            else None
+        )
         tool_versions = self._versions()
         semantic = self._semantic_options(model_identity, diar_identity, tool_versions)
         job_id = _job_id(source_identity, semantic)
@@ -275,16 +320,22 @@ class Pipeline:
 
         existing = _load_manifest_if_present(manifest_path)
         if existing and existing.get("state") == "completed" and self.options.resume and not self.options.force:
-            if _requested_artifacts_exist(job_dir, self.options.formats):
+            source_ready = _requested_artifacts_exist(job_dir, self.options.formats)
+            translation_matches = self._translation_matches(existing, translation_identity)
+            translation_ready = not self._translation_requested() or (
+                translation_matches
+                and _requested_translation_artifacts_exist(
+                    job_dir, self.options.formats, self.options.translate_to or ""
+                )
+            )
+            if source_ready and translation_ready:
                 return JobResult(str(source), str(job_dir), "completed", skipped=True)
-            if canonical_path.is_file():
-                transcript = Transcript.load(canonical_path)
-                self._render(job_dir, transcript)
-                existing["artifacts"] = _artifact_manifest(job_dir)
-                existing["options"]["requested_formats"] = list(self.options.formats)
-                existing["updated_at"] = _now()
-                atomic_write_json(manifest_path, existing)
-                return JobResult(str(source), str(job_dir), "completed")
+            translation_path = _translation_path(job_dir, self.options.translate_to or "")
+            if self._translation_requested() and translation_path.exists() and not translation_matches:
+                raise ArtifactConflictError(
+                    f"Translation output already exists with different settings: {translation_path}; "
+                    "use --force"
+                )
         if existing and not self.options.resume and not self.options.force:
             raise ArtifactConflictError(f"Job output already exists: {job_dir}; use --resume or --force")
 
@@ -295,6 +346,7 @@ class Pipeline:
             source=source_identity,
             model=model_identity,
             diar_model=diar_identity,
+            translation_model=translation_identity,
             options={**semantic, "requested_formats": list(self.options.formats)},
             tools=tool_versions,
         )
@@ -308,6 +360,7 @@ class Pipeline:
             source_identity=source_identity,
             model_identity=model_identity,
             diar_identity=diar_identity,
+            translation_identity=translation_identity,
             job_id=job_id,
             job_dir=job_dir,
             work_dir=work_dir,
@@ -320,9 +373,12 @@ class Pipeline:
             started=started,
         )
 
-        if not self.options.force and canonical_path.is_file() and manifest.get("state_detail") == "transcribed":
+        if not self.options.force and existing and canonical_path.is_file():
             prepared.transcript = Transcript.load(canonical_path)
             prepared.duration = prepared.transcript.duration
+            translation_path = _translation_path(job_dir, self.options.translate_to or "")
+            if self._translation_matches(existing, translation_identity) and translation_path.is_file():
+                prepared.translation = Translation.load(translation_path)
             return prepared
 
         try:
@@ -362,6 +418,33 @@ class Pipeline:
     def _complete(self, prepared: PreparedJob) -> JobResult:
         if prepared.transcript is None:
             raise InferenceError("Cannot complete a job without a transcript")
+        self._commit_transcript(prepared)
+        if self._translation_requested() and prepared.translation is None:
+            raise InferenceError("Cannot complete a translated job without translated segments")
+
+        self._render(prepared.job_dir, prepared.transcript)
+        if prepared.translation is not None:
+            self._render_translation(prepared.job_dir, prepared.translation)
+            prepared.manifest["translation"] = {
+                "model": prepared.translation_identity,
+                "source_language": prepared.translation.source_language,
+                "target_language": prepared.translation.target_language,
+            }
+        prepared.manifest.setdefault("options", {})["requested_formats"] = list(
+            self.options.formats
+        )
+        prepared.manifest["artifacts"] = _artifact_manifest(prepared.job_dir)
+        prepared.manifest["state"] = "completed"
+        prepared.manifest["state_detail"] = "completed"
+        prepared.manifest["updated_at"] = _now()
+        prepared.manifest.setdefault("timings", {})["total_seconds"] = time.monotonic() - prepared.started
+        atomic_write_json(prepared.manifest_path, prepared.manifest)
+        self._cleanup_audio(prepared)
+        return JobResult(str(prepared.source), str(prepared.job_dir), "completed")
+
+    def _commit_transcript(self, prepared: PreparedJob) -> None:
+        if prepared.transcript is None:
+            raise InferenceError("Cannot commit a job without a transcript")
         transcript = prepared.transcript
         transcript.segments = transcript.segments or build_segments(transcript)
         transcript.provenance.update(
@@ -376,15 +459,66 @@ class Pipeline:
         prepared.manifest["state_detail"] = "transcribed"
         atomic_write_json(prepared.manifest_path, prepared.manifest)
 
-        self._render(prepared.job_dir, transcript)
-        prepared.manifest["artifacts"] = _artifact_manifest(prepared.job_dir)
-        prepared.manifest["state"] = "completed"
-        prepared.manifest["state_detail"] = "completed"
-        prepared.manifest["updated_at"] = _now()
-        prepared.manifest.setdefault("timings", {})["total_seconds"] = time.monotonic() - prepared.started
-        atomic_write_json(prepared.manifest_path, prepared.manifest)
-        self._cleanup_audio(prepared)
-        return JobResult(str(prepared.source), str(prepared.job_dir), "completed")
+    def _translate_jobs(self, prepared_jobs: list[PreparedJob]) -> None:
+        if not self._translation_requested():
+            return
+        pending = [prepared for prepared in prepared_jobs if prepared.translation is None]
+        if not pending:
+            return
+        source_texts: list[str] = []
+        ranges: list[tuple[PreparedJob, int, int]] = []
+        for prepared in pending:
+            if prepared.transcript is None:
+                raise InferenceError("Cannot translate a job without a transcript")
+            prepared.transcript.segments = prepared.transcript.segments or build_segments(
+                prepared.transcript
+            )
+            start = len(source_texts)
+            source_texts.extend(segment.text for segment in prepared.transcript.segments)
+            ranges.append((prepared, start, len(source_texts)))
+        if not source_texts:
+            raise InferenceError("Cannot translate an empty transcript")
+
+        step_started = time.monotonic()
+        translated_texts = translate_texts(
+            source_texts,
+            self._translation_options(),
+            runner=self.runner,
+        )
+        elapsed = time.monotonic() - step_started
+        for prepared, start, end in ranges:
+            assert prepared.transcript is not None
+            source_segments = prepared.transcript.segments
+            translated_segments = [
+                TranslatedSegment(
+                    source_text=source.text,
+                    text=translated,
+                    start=source.start,
+                    end=source.end,
+                    speaker=source.speaker,
+                )
+                for source, translated in zip(source_segments, translated_texts[start:end])
+            ]
+            prepared.translation = Translation(
+                source_language=self.options.source_language or "",
+                target_language=self.options.translate_to or "",
+                segments=translated_segments,
+                provenance={
+                    "engine": "NeMo-Speech.cpp",
+                    "model_path": str((self.options.translation_model or Path()).resolve()),
+                    "model_sha256": (prepared.translation_identity or {}).get("sha256"),
+                    "source_transcript_sha256": sha256_file(prepared.canonical_path),
+                    "device": self.options.device,
+                },
+            )
+            prepared.translation.validate()
+            prepared.manifest.setdefault("timings", {})["translation_batch_seconds"] = elapsed
+            prepared.manifest["state_detail"] = "translated"
+            atomic_write_json(
+                _translation_path(prepared.job_dir, prepared.translation.target_language),
+                prepared.translation.to_dict(),
+            )
+            atomic_write_json(prepared.manifest_path, prepared.manifest)
 
     def _render(self, job_dir: Path, transcript: Transcript) -> None:
         atomic_write_json(job_dir / "transcript.json", transcript.to_dict())
@@ -396,6 +530,18 @@ class Pipeline:
             atomic_write_text(job_dir / "subtitles.srt", render_srt(segments))
         if "vtt" in formats:
             atomic_write_text(job_dir / "subtitles.vtt", render_vtt(segments))
+
+    def _render_translation(self, job_dir: Path, translation: Translation) -> None:
+        target = translation.target_language
+        atomic_write_json(_translation_path(job_dir, target), translation.to_dict())
+        formats = set(self.options.formats)
+        if "txt" in formats:
+            atomic_write_text(job_dir / f"translation.{target}.txt", render_translation_text(translation))
+        segments = [segment.as_subtitle_segment() for segment in translation.segments]
+        if "srt" in formats:
+            atomic_write_text(job_dir / f"subtitles.{target}.srt", render_srt(segments))
+        if "vtt" in formats:
+            atomic_write_text(job_dir / f"subtitles.{target}.vtt", render_vtt(segments))
 
     def _cleanup_audio(self, prepared: PreparedJob) -> None:
         if not prepared.passthrough and not self.options.keep_audio:
@@ -438,6 +584,36 @@ class Pipeline:
             device=self.options.device,
             diarize=self.options.diarize,
             diar_model=self.options.diar_model,
+        )
+
+    def _translation_options(self) -> TranslationOptions:
+        if not self._translation_requested() or self.options.translation_model is None:
+            raise ConfigurationError("Translation is not fully configured")
+        return TranslationOptions(
+            executable=self.options.nemo_speech,
+            model=self.options.translation_model,
+            source_language=self.options.source_language or "",
+            target_language=self.options.translate_to or "",
+            device=self.options.device,
+        )
+
+    def _translation_requested(self) -> bool:
+        return self.options.translation_model is not None
+
+    def _translation_matches(
+        self,
+        manifest: dict[str, Any],
+        translation_identity: dict[str, Any] | None,
+    ) -> bool:
+        if not self._translation_requested() or translation_identity is None:
+            return False
+        existing = manifest.get("translation")
+        return bool(
+            isinstance(existing, dict)
+            and isinstance(existing.get("model"), dict)
+            and existing["model"].get("sha256") == translation_identity.get("sha256")
+            and existing.get("source_language") == self.options.source_language
+            and existing.get("target_language") == self.options.translate_to
         )
 
     def _semantic_options(
@@ -494,6 +670,7 @@ def _new_manifest(
     source: dict[str, Any],
     model: dict[str, Any],
     diar_model: dict[str, Any] | None,
+    translation_model: dict[str, Any] | None,
     options: dict[str, Any],
     tools: dict[str, str],
 ) -> dict[str, Any]:
@@ -508,6 +685,7 @@ def _new_manifest(
         "source": source,
         "model": model,
         "diar_model": diar_model,
+        "translation_model": translation_model,
         "options": options,
         "tools": tools,
         "timings": {},
@@ -544,6 +722,16 @@ def _artifact_manifest(job_dir: Path) -> dict[str, Any]:
                 "size": path.stat().st_size,
                 "sha256": sha256_file(path),
             }
+    translated_files = sorted(job_dir.glob("translation.*.json"))
+    translated_files.extend(sorted(job_dir.glob("translation.*.txt")))
+    translated_files.extend(sorted(job_dir.glob("subtitles.*.srt")))
+    translated_files.extend(sorted(job_dir.glob("subtitles.*.vtt")))
+    for path in translated_files:
+        output[path.name] = {
+            "path": path.name,
+            "size": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
     return output
 
 
@@ -555,6 +743,26 @@ def _requested_artifacts_exist(job_dir: Path, formats: tuple[str, ...]) -> bool:
         "vtt": "subtitles.vtt",
     }
     return (job_dir / "transcript.json").is_file() and all(
+        (job_dir / names[format_name]).is_file() for format_name in formats
+    )
+
+
+def _translation_path(job_dir: Path, target_language: str) -> Path:
+    return job_dir / f"translation.{target_language}.json"
+
+
+def _requested_translation_artifacts_exist(
+    job_dir: Path,
+    formats: tuple[str, ...],
+    target_language: str,
+) -> bool:
+    names = {
+        "json": f"translation.{target_language}.json",
+        "txt": f"translation.{target_language}.txt",
+        "srt": f"subtitles.{target_language}.srt",
+        "vtt": f"subtitles.{target_language}.vtt",
+    }
+    return _translation_path(job_dir, target_language).is_file() and all(
         (job_dir / names[format_name]).is_file() for format_name in formats
     )
 

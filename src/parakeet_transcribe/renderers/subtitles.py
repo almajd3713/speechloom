@@ -79,7 +79,7 @@ def build_segments(
 def render_srt(segments: list[Segment]) -> str:
     blocks = [
         f"{index}\n{_format_timestamp(segment.start, srt=True)} --> {_format_timestamp(segment.end, srt=True)}\n"
-        f"{_speaker_prefix(segment)}{segment.text}"
+        f"{_speaker_prefix(segment)}{_wrap_subtitle(' '.join(segment.text.split()), 42)}"
         for index, segment in enumerate(segments, start=1)
     ]
     return "\n\n".join(blocks) + ("\n" if blocks else "")
@@ -88,7 +88,7 @@ def render_srt(segments: list[Segment]) -> str:
 def render_vtt(segments: list[Segment]) -> str:
     blocks = [
         f"{_format_timestamp(segment.start, srt=False)} --> {_format_timestamp(segment.end, srt=False)}\n"
-        f"{_speaker_prefix(segment)}{segment.text}"
+        f"{_speaker_prefix(segment)}{_wrap_subtitle(' '.join(segment.text.split()), 42)}"
         for segment in segments
     ]
     return "WEBVTT\n\n" + "\n\n".join(blocks) + ("\n" if blocks else "")

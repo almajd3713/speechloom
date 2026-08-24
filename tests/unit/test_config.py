@@ -17,6 +17,50 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(args.output_dir, "custom-output")
 
+    def test_translation_options_are_available_in_cli_and_config(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "transcribe",
+                "recording.wav",
+                "--translation-model",
+                "translate.gguf",
+                "--source-language",
+                "RU",
+                "--translate-to",
+                "EN",
+            ]
+        )
+        settings = load_settings(
+            cli_values={
+                "translation_model": args.translation_model,
+                "source_language": args.source_language,
+                "translate_to": args.translate_to,
+            },
+            env={},
+        )
+
+        self.assertEqual(settings.translation_model, "translate.gguf")
+        self.assertEqual(settings.source_language, "ru")
+        self.assertEqual(settings.translate_to, "en")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "config.ini"
+            config.write_text(
+                "[parakeet-transcribe]\n"
+                "translation_model = from-config.gguf\n"
+                "source_language = ru\n"
+                "translate_to = en\n",
+                encoding="utf-8",
+            )
+            configured = load_settings(config_path=config, env={})
+        self.assertEqual(configured.translation_model, "from-config.gguf")
+        self.assertEqual(configured.source_language, "ru")
+        self.assertEqual(configured.translate_to, "en")
+
+    def test_translation_options_must_be_complete(self) -> None:
+        with self.assertRaisesRegex(ConfigurationError, "configured together"):
+            load_settings(cli_values={"translate_to": "en"}, env={})
+
     def test_precedence_cli_then_environment_then_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.ini"

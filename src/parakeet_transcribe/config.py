@@ -22,6 +22,9 @@ class Settings:
     nemo_speech: str = "nemo-speech"
     model: str | None = None
     diar_model: str | None = None
+    translation_model: str | None = None
+    source_language: str | None = None
+    translate_to: str | None = None
     device: str = "auto"
     output_dir: str = "transcripts"
     workers: int = 1
@@ -100,12 +103,26 @@ def _coerce_settings(values: Mapping[str, Any]) -> Settings:
     if workers < 1:
         raise ConfigurationError("workers must be at least 1")
 
+    translation_model = _none_if_empty(values.get("translation_model"))
+    source_language = _language_code(values.get("source_language"), "source_language")
+    translate_to = _language_code(values.get("translate_to"), "translate_to")
+    configured_translation_values = (translation_model, source_language, translate_to)
+    if any(configured_translation_values) and not all(configured_translation_values):
+        raise ConfigurationError(
+            "translation_model, source_language, and translate_to must be configured together"
+        )
+    if source_language and source_language == translate_to:
+        raise ConfigurationError("source_language and translate_to must be different")
+
     return Settings(
         ffmpeg=str(values.get("ffmpeg", "ffmpeg")),
         ffprobe=str(values.get("ffprobe", "ffprobe")),
         nemo_speech=str(values.get("nemo_speech", "nemo-speech")),
         model=_none_if_empty(values.get("model")),
         diar_model=_none_if_empty(values.get("diar_model")),
+        translation_model=translation_model,
+        source_language=source_language,
+        translate_to=translate_to,
         device=device,
         output_dir=str(values.get("output_dir", "transcripts")),
         workers=workers,
@@ -138,3 +155,13 @@ def _none_if_empty(value: Any) -> str | None:
     if value is None or str(value).strip() == "":
         return None
     return str(value)
+
+
+def _language_code(value: Any, name: str) -> str | None:
+    normalized = _none_if_empty(value)
+    if normalized is None:
+        return None
+    normalized = normalized.lower()
+    if re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})*", normalized) is None:
+        raise ConfigurationError(f"{name} must be a language code such as ru, en, or zh-cn")
+    return normalized

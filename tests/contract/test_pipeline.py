@@ -13,6 +13,7 @@ class FakeTools:
     def __init__(self, omit_batch_result: int | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
         self.inference_calls = 0
+        self.translation_calls = 0
         self.omit_batch_result = omit_batch_result
 
     @staticmethod
@@ -56,6 +57,20 @@ class FakeTools:
                     )
                 return CommandResult(call, 0, "", "")
             payload = self.transcript_payload()
+            return CommandResult(call, 0, json.dumps(payload, ensure_ascii=False), "")
+        if call[0] == "nemo-speech" and call[1] == "translate":
+            self.translation_calls += 1
+            input_path = Path(call[call.index("--input") + 1])
+            inputs = input_path.read_text(encoding="utf-8").splitlines()
+            payload = [
+                {
+                    "input": text,
+                    "text": "Hello, world!",
+                    "source_language": "ru",
+                    "target_language": "en",
+                }
+                for text in inputs
+            ]
             return CommandResult(call, 0, json.dumps(payload, ensure_ascii=False), "")
         return CommandResult(call, 2, "", "unexpected fake command")
 
@@ -125,6 +140,72 @@ class PipelineContractTests(unittest.TestCase):
             for result in results:
                 manifest = inspect_job(Path(result.job_dir))
                 self.assertEqual(manifest["timings"]["batch_size"], 2)
+
+    def test_translation_preserves_source_and_resumes_without_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "russian.mp4"
+            model = root / "parakeet.gguf"
+            translation_model = root / "translate.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"asr")
+            translation_model.write_bytes(b"nmt")
+            tools = FakeTools()
+            source_options = PipelineOptions(output_dir=root / "out", model=model)
+            translation_options = PipelineOptions(
+                output_dir=root / "out",
+                model=model,
+                translation_model=translation_model,
+                source_language="ru",
+                translate_to="en",
+            )
+
+            first = Pipeline(source_options, runner=tools).run([source])[0]
+            second = Pipeline(translation_options, runner=tools).run([source])[0]
+            third = Pipeline(translation_options, runner=tools).run([source])[0]
+
+            self.assertIsNone(first.error)
+            self.assertFalse(second.skipped)
+            self.assertTrue(third.skipped)
+            self.assertEqual(first.job_dir, second.job_dir)
+            self.assertEqual(tools.inference_calls, 1)
+            self.assertEqual(tools.translation_calls, 1)
+            job = Path(first.job_dir)
+            self.assertEqual((job / "transcript.txt").read_text(encoding="utf-8"), "Привет, world!\n")
+            self.assertEqual((job / "translation.en.txt").read_text(encoding="utf-8"), "Hello, world!\n")
+            self.assertTrue((job / "subtitles.en.srt").is_file())
+            self.assertTrue((job / "subtitles.en.vtt").is_file())
+            translation = json.loads((job / "translation.en.json").read_text(encoding="utf-8"))
+            self.assertEqual(translation["source_language"], "ru")
+            self.assertEqual(translation["target_language"], "en")
+            self.assertEqual(translation["segments"][0]["source_text"], "Привет, world!")
+
+    def test_shared_batch_loads_translation_model_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = [root / "one.mp4", root / "two.mp4"]
+            model = root / "parakeet.gguf"
+            translation_model = root / "translate.gguf"
+            for source in sources:
+                source.write_bytes(b"media")
+            model.write_bytes(b"asr")
+            translation_model.write_bytes(b"nmt")
+            tools = FakeTools()
+
+            results = Pipeline(
+                PipelineOptions(
+                    output_dir=root / "out",
+                    model=model,
+                    translation_model=translation_model,
+                    source_language="ru",
+                    translate_to="en",
+                ),
+                runner=tools,
+            ).run(sources)
+
+            self.assertTrue(all(result.error is None for result in results))
+            self.assertEqual(tools.inference_calls, 1)
+            self.assertEqual(tools.translation_calls, 1)
 
     def test_shared_model_batch_isolates_missing_native_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -79,6 +79,9 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--nemo-speech", dest="nemo_speech")
     parser.add_argument("--model")
     parser.add_argument("--diar-model", dest="diar_model")
+    parser.add_argument("--translation-model", dest="translation_model")
+    parser.add_argument("--source-language", dest="source_language", help="Spoken language, for example ru")
+    parser.add_argument("--translate-to", dest="translate_to", help="Translate transcript outputs, for example en")
     parser.add_argument("--device", help="auto, cpu, cuda[:N], metal, vulkan[:N], or gpu[:N]")
 
 
@@ -141,6 +144,11 @@ def _transcribe(args: argparse.Namespace, settings: Settings) -> int:
         audio_stream=args.audio_stream,
         diarize=args.diarize,
         diar_model=Path(settings.diar_model).expanduser() if settings.diar_model else None,
+        translation_model=(
+            Path(settings.translation_model).expanduser() if settings.translation_model else None
+        ),
+        source_language=settings.source_language,
+        translate_to=settings.translate_to,
         keep_audio=settings.keep_audio,
         resume=settings.resume,
         force=args.force,
@@ -181,7 +189,8 @@ def _inspect(args: argparse.Namespace) -> int:
 
 def _settings_cli_values(args: argparse.Namespace) -> dict[str, Any]:
     names = (
-        "ffmpeg", "ffprobe", "nemo_speech", "model", "diar_model", "device",
+        "ffmpeg", "ffprobe", "nemo_speech", "model", "diar_model", "translation_model",
+        "source_language", "translate_to", "device",
         "output_dir", "workers", "keep_audio", "resume", "formats",
     )
     return {name: getattr(args, name, None) for name in names}
