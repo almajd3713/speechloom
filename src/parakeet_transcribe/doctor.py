@@ -51,8 +51,10 @@ def run_doctor(
         status = "ok" if result.returncode == 0 else "error"
         checks.append(Check(name, status, version[0] if version else str(resolved)))
 
+    model_path: Path | None = None
     if settings.model:
         model = Path(settings.model).expanduser()
+        model_path = model if model.is_file() else None
         checks.append(
             Check("asr-model", "ok", str(model.resolve()), {"size": model.stat().st_size})
             if model.is_file()
@@ -80,6 +82,25 @@ def run_doctor(
                 details,
             )
         )
+        if model_path is not None:
+            model_result = runner(
+                [settings.nemo_speech, "model", "info", str(model_path)],
+                check=False,
+            )
+            model_details = _maybe_json(model_result.stdout)
+            compatible = (
+                model_result.returncode == 0
+                and isinstance(model_details, dict)
+                and model_details.get("runtime_compatible") is True
+            )
+            checks.append(
+                Check(
+                    "model-compatibility",
+                    "ok" if compatible else "error",
+                    "Model is compatible with this runtime" if compatible else _diagnostic(model_result),
+                    model_details,
+                )
+            )
 
     if settings.device.startswith("cuda"):
         if _resolve_executable("nvidia-smi") is None:

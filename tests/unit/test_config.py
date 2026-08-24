@@ -13,7 +13,7 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.ini"
             config.write_text(
-                "[parakeet-transcribe]\nmodel = from-file.gguf\nworkers = 2\ndevice = cpu\n",
+                "[parakeet-transcribe]\nmodel = from-file.gguf\nworkers = 2\ndevice = cpu\nshared_model = false\n",
                 encoding="utf-8",
             )
             settings = load_settings(
@@ -25,6 +25,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.workers, 3)
         self.assertEqual(settings.device, "cpu")
         self.assertEqual(settings.formats, ("json", "txt"))
+        self.assertFalse(settings.shared_model)
 
     def test_rejects_invalid_boolean(self) -> None:
         with self.assertRaises(ConfigurationError):
@@ -37,4 +38,3 @@ class SettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

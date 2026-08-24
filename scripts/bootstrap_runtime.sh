@@ -7,6 +7,9 @@ runtime_url="https://github.com/NVIDIA/NeMo-Speech.cpp.git"
 backend="cpu"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_prefix="${project_root}/.runtime/nemo-speech"
+if [[ -x "${project_root}/.runtime/tools/bin/cmake" ]]; then
+    export PATH="${project_root}/.runtime/tools/bin:${PATH}"
+fi
 
 usage() {
     echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY]"
@@ -53,8 +56,9 @@ cmake_version="$(cmake --version | awk 'NR == 1 { print $3 }')"
 cmake_major="${cmake_version%%.*}"
 cmake_rest="${cmake_version#*.}"
 cmake_minor="${cmake_rest%%.*}"
-if (( cmake_major < 3 || (cmake_major == 3 && cmake_minor < 26) )); then
-    echo "CMake 3.26+ is required; found ${cmake_version}." >&2
+if (( cmake_major < 3 || (cmake_major == 3 && cmake_minor < 26) || cmake_major >= 4 )); then
+    echo "CMake 3.26 through 3.x is required; found ${cmake_version}." >&2
+    echo "Run scripts/bootstrap_build_tools.sh for an isolated compatible toolchain." >&2
     exit 3
 fi
 
@@ -80,13 +84,18 @@ source_dir="${temporary_root}/NeMo-Speech.cpp"
 echo "Fetching NeMo-Speech.cpp at ${runtime_ref}..."
 git clone --filter=blob:none "$runtime_url" "$source_dir"
 git -C "$source_dir" checkout --detach "$runtime_ref"
-git -C "$source_dir" submodule update --init ggml third_party/cpp-httplib
+git -C "$source_dir" submodule update --init ggml llama.cpp third_party/cpp-httplib
 
 preset="${backend}-server"
 echo "Building ${preset}..."
 (
     cd "$source_dir"
-    scripts/configure.sh "$preset"
+    scripts/build_sentencepiece_static.sh
+    scripts/configure.sh "$preset" \
+        -DNEMO_SPEECH_BUILD_TTS=OFF \
+        -DNEMO_SPEECH_BUILD_NMT=OFF \
+        -DNEMO_SPEECH_WITH_NMT=OFF \
+        -DNEMO_SPEECH_BUILD_HTTP=OFF
     cmake --build --preset "$preset"
     cmake --install "build/${preset}" --prefix "$install_prefix"
 )
@@ -95,4 +104,3 @@ echo "Building ${preset}..."
 echo
 echo "Runtime installed at: ${install_prefix}"
 echo "Configure nemo_speech = ${install_prefix}/bin/nemo-speech"
-

@@ -24,6 +24,7 @@ class Settings:
     device: str = "auto"
     output_dir: str = "transcripts"
     workers: int = 1
+    shared_model: bool = True
     keep_audio: bool = False
     resume: bool = True
     formats: tuple[str, ...] = ("json", "txt", "srt", "vtt")
@@ -106,6 +107,7 @@ def _coerce_settings(values: Mapping[str, Any]) -> Settings:
         device=device,
         output_dir=str(values.get("output_dir", "transcripts")),
         workers=workers,
+        shared_model=_as_bool(values.get("shared_model", True), "shared_model"),
         keep_audio=_as_bool(values.get("keep_audio", False), "keep_audio"),
         resume=_as_bool(values.get("resume", True), "resume"),
         formats=formats,

@@ -40,13 +40,26 @@ def build_parser() -> argparse.ArgumentParser:
     transcribe.add_argument("--recursive", action="store_true", help="Recurse into input directories")
     transcribe.add_argument("--diarize", action="store_true", help="Enable integrated Sortformer diarization")
     transcribe.add_argument("--workers", type=int)
+    shared_model_group = transcribe.add_mutually_exclusive_group()
+    shared_model_group.add_argument(
+        "--shared-model",
+        dest="shared_model",
+        action="store_true",
+        help="Use one native directory invocation for multi-file jobs (default)",
+    )
+    shared_model_group.add_argument(
+        "--no-shared-model",
+        dest="shared_model",
+        action="store_false",
+        help="Invoke the native runtime separately for each input",
+    )
     transcribe.add_argument("--keep-audio", action="store_true", default=None)
     transcribe.add_argument("--force", action="store_true", help="Recompute and atomically replace job artifacts")
     transcribe.add_argument("--fail-fast", action="store_true", help="Stop scheduling after the first failure")
     resume_group = transcribe.add_mutually_exclusive_group()
     resume_group.add_argument("--resume", dest="resume", action="store_true")
     resume_group.add_argument("--no-resume", dest="resume", action="store_false")
-    transcribe.set_defaults(resume=None)
+    transcribe.set_defaults(resume=None, shared_model=None)
     transcribe.add_argument("--json", action="store_true", help="Emit machine-readable job results")
 
     inspect = subparsers.add_parser("inspect", help="Inspect a job directory or manifest")
@@ -128,6 +141,7 @@ def _transcribe(args: argparse.Namespace, settings: Settings) -> int:
         force=args.force,
         workers=settings.workers,
         fail_fast=args.fail_fast,
+        shared_model=settings.shared_model,
     )
     results = Pipeline(options).run(sources)
     if args.json:

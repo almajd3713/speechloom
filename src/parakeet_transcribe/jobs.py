@@ -1,4 +1,4 @@
-"""Resumable single-file and batch pipeline orchestration."""
+"""Resumable single-file and shared-model batch orchestration."""
 
 from __future__ import annotations
 
@@ -10,16 +10,25 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import time
 from typing import Any, Callable
 
+from . import __version__
 from .artifacts import atomic_write_json, atomic_write_text, file_identity, read_json, sha256_file
-from .errors import ArtifactConflictError, ConfigurationError, PipelineError
-from .media import MediaInfo, can_passthrough_wav, normalize_audio, probe_media, select_audio_stream
-from .nemo import NemoOptions, transcribe
+from .errors import ArtifactConflictError, ConfigurationError, InferenceError, PipelineError
+from .media import can_passthrough_wav, normalize_audio, probe_media, select_audio_stream
+from .nemo import (
+    NemoOptions,
+    adapt_payload,
+    map_native_failure,
+    transcribe,
+    transcribe_directory,
+)
 from .process import CommandResult, run_command
 from .renderers import build_segments, render_srt, render_text, render_vtt
-from .schema import Transcript
+from .schema import SCHEMA_VERSION, Transcript
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -42,6 +51,7 @@ class PipelineOptions:
     force: bool = False
     workers: int = 1
     fail_fast: bool = False
+    shared_model: bool = True
 
 
 @dataclass(frozen=True)
@@ -51,6 +61,25 @@ class JobResult:
     state: str
     skipped: bool = False
     error: str | None = None
+
+
+@dataclass
+class PreparedJob:
+    source: Path
+    source_identity: dict[str, Any]
+    model_identity: dict[str, Any]
+    diar_identity: dict[str, Any] | None
+    job_id: str
+    job_dir: Path
+    work_dir: Path
+    manifest_path: Path
+    canonical_path: Path
+    manifest: dict[str, Any]
+    audio_path: Path
+    duration: float | None
+    passthrough: bool
+    started: float
+    transcript: Transcript | None = None
 
 
 class Pipeline:
@@ -63,6 +92,38 @@ class Pipeline:
         self._tool_versions: dict[str, str] | None = None
 
     def run(self, sources: list[Path]) -> list[JobResult]:
+        sources = [source.expanduser().resolve() for source in sources]
+        if len(sources) > 1 and self.options.shared_model:
+            return self._run_shared_batch(sources)
+        return self._run_isolated(sources)
+
+    def run_one(self, source: Path) -> JobResult:
+        prepared: PreparedJob | None = None
+        try:
+            prepared_or_result = self._prepare(source)
+            if isinstance(prepared_or_result, JobResult):
+                return prepared_or_result
+            prepared = prepared_or_result
+            if prepared.transcript is None:
+                step_started = time.monotonic()
+                prepared.transcript = transcribe(
+                    prepared.audio_path,
+                    self._nemo_options(),
+                    duration=prepared.duration,
+                    runner=self.runner,
+                )
+                prepared.manifest.setdefault("timings", {})["inference_seconds"] = (
+                    time.monotonic() - step_started
+                )
+            return self._complete(prepared)
+        except KeyboardInterrupt:
+            if prepared is not None:
+                self._mark_interrupted(prepared)
+            raise
+        except Exception as exc:
+            return self._failed_result(source, exc, prepared)
+
+    def _run_isolated(self, sources: list[Path]) -> list[JobResult]:
         if self.options.workers == 1 or len(sources) <= 1:
             results: list[JobResult] = []
             for source in sources:
@@ -79,7 +140,7 @@ class Pipeline:
                 source = future_map[future]
                 try:
                     result = future.result()
-                except Exception as exc:  # defensive isolation at the batch boundary
+                except Exception as exc:  # defensive isolation at the thread boundary
                     result = JobResult(str(source), "", "failed", error=str(exc))
                 results_by_source[str(source)] = result
                 if result.error and self.options.fail_fast:
@@ -88,44 +149,183 @@ class Pipeline:
                     break
         return [results_by_source[str(source)] for source in sources if str(source) in results_by_source]
 
-    def run_one(self, source: Path) -> JobResult:
+    def _run_shared_batch(self, sources: list[Path]) -> list[JobResult]:
+        results_by_source, pending, halted = self._prepare_batch(sources)
+        if halted:
+            for prepared in pending:
+                self._mark_interrupted(prepared)
+            return _ordered_results(sources, results_by_source)
+        if not pending:
+            return _ordered_results(sources, results_by_source)
+
+        try:
+            results_by_source.update(self._transcribe_shared(pending))
+        except KeyboardInterrupt:
+            for prepared in pending:
+                self._mark_interrupted(prepared)
+            raise
+        except Exception as exc:
+            results_by_source.update(self._fail_prepared(pending, exc))
+        return _ordered_results(sources, results_by_source)
+
+    def _prepare_batch(
+        self, sources: list[Path]
+    ) -> tuple[dict[str, JobResult], list[PreparedJob], bool]:
+        results: dict[str, JobResult] = {}
+        pending: list[PreparedJob] = []
+        for source in sources:
+            try:
+                prepared_or_result = self._prepare(source)
+                if isinstance(prepared_or_result, JobResult):
+                    result = prepared_or_result
+                elif prepared_or_result.transcript is not None:
+                    result = self._complete(prepared_or_result)
+                else:
+                    pending.append(prepared_or_result)
+                    continue
+            except Exception as exc:
+                result = self._failed_result(source, exc, None)
+            results[str(source)] = result
+            if result.error and self.options.fail_fast:
+                return results, pending, True
+        return results, pending, False
+
+    def _transcribe_shared(self, pending: list[PreparedJob]) -> dict[str, JobResult]:
+        output_root = self.options.output_dir.expanduser().resolve()
+        output_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".parakeet-batch-", dir=output_root) as temporary:
+            staging_root = Path(temporary)
+            input_dir = staging_root / "input"
+            output_dir = staging_root / "output"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            staged = self._stage_batch(pending, input_dir)
+            step_started = time.monotonic()
+            command_result = transcribe_directory(
+                input_dir,
+                output_dir,
+                self._nemo_options(),
+                concurrency=self.options.workers,
+                runner=self.runner,
+            )
+            elapsed = time.monotonic() - step_started
+            return self._collect_batch_results(staged, output_dir, command_result, elapsed)
+
+    @staticmethod
+    def _stage_batch(
+        pending: list[PreparedJob], input_dir: Path
+    ) -> list[tuple[PreparedJob, str]]:
+        staged = [
+            (prepared, f"{index:06d}-{prepared.job_id}")
+            for index, prepared in enumerate(pending)
+        ]
+        for prepared, native_stem in staged:
+            _link_or_copy(prepared.audio_path, input_dir / f"{native_stem}.wav")
+        return staged
+
+    def _collect_batch_results(
+        self,
+        staged: list[tuple[PreparedJob, str]],
+        output_dir: Path,
+        command_result: CommandResult,
+        elapsed: float,
+    ) -> dict[str, JobResult]:
+        results: dict[str, JobResult] = {}
+        native_error = map_native_failure(command_result) if command_result.returncode else None
+        for prepared, native_stem in staged:
+            result_path = output_dir / f"{native_stem}.json"
+            if not result_path.is_file():
+                error = native_error or InferenceError(
+                    f"NeMo batch produced no result for: {prepared.source}"
+                )
+                results[str(prepared.source)] = self._failed_result(prepared.source, error, prepared)
+                continue
+            try:
+                payload = json.loads(result_path.read_text(encoding="utf-8"))
+                prepared.transcript = adapt_payload(payload, duration=prepared.duration)
+                timings = prepared.manifest.setdefault("timings", {})
+                timings["batch_inference_seconds"] = elapsed
+                timings["batch_size"] = len(staged)
+                results[str(prepared.source)] = self._complete(prepared)
+            except Exception as exc:
+                results[str(prepared.source)] = self._failed_result(prepared.source, exc, prepared)
+        return results
+
+    def _fail_prepared(
+        self, pending: list[PreparedJob], exc: Exception
+    ) -> dict[str, JobResult]:
+        return {
+            str(prepared.source): self._failed_result(prepared.source, exc, prepared)
+            for prepared in pending
+        }
+
+    def _prepare(self, source: Path) -> PreparedJob | JobResult:
         source = source.expanduser().resolve()
         started = time.monotonic()
-        manifest: dict[str, Any] | None = None
-        manifest_path: Path | None = None
-        try:
-            source_identity = self._identity(source)
-            model_identity = self._identity(self.options.model)
-            diar_identity = self._identity(self.options.diar_model) if self.options.diar_model else None
-            semantic = self._semantic_options(model_identity, diar_identity)
-            job_id = _job_id(source_identity, semantic)
-            job_dir = self.options.output_dir.expanduser().resolve() / _job_dir_name(source, job_id)
-            work_dir = job_dir / ".work"
-            manifest_path = job_dir / "manifest.json"
-            canonical_path = job_dir / "transcript.json"
+        source_identity = self._identity(source)
+        model_identity = self._identity(self.options.model)
+        diar_identity = self._identity(self.options.diar_model) if self.options.diar_model else None
+        tool_versions = self._versions()
+        semantic = self._semantic_options(model_identity, diar_identity, tool_versions)
+        job_id = _job_id(source_identity, semantic)
+        job_dir = self.options.output_dir.expanduser().resolve() / _job_dir_name(source, job_id)
+        work_dir = job_dir / ".work"
+        manifest_path = job_dir / "manifest.json"
+        canonical_path = job_dir / "transcript.json"
 
-            existing = _load_manifest_if_present(manifest_path)
-            if existing and existing.get("state") == "completed" and self.options.resume and not self.options.force:
+        existing = _load_manifest_if_present(manifest_path)
+        if existing and existing.get("state") == "completed" and self.options.resume and not self.options.force:
+            if _requested_artifacts_exist(job_dir, self.options.formats):
                 return JobResult(str(source), str(job_dir), "completed", skipped=True)
-            if existing and not self.options.resume and not self.options.force:
-                raise ArtifactConflictError(
-                    f"Job output already exists: {job_dir}; use --resume or --force"
-                )
+            if canonical_path.is_file():
+                transcript = Transcript.load(canonical_path)
+                self._render(job_dir, transcript)
+                existing["artifacts"] = _artifact_manifest(job_dir)
+                existing["options"]["requested_formats"] = list(self.options.formats)
+                existing["updated_at"] = _now()
+                atomic_write_json(manifest_path, existing)
+                return JobResult(str(source), str(job_dir), "completed")
+        if existing and not self.options.resume and not self.options.force:
+            raise ArtifactConflictError(f"Job output already exists: {job_dir}; use --resume or --force")
 
-            job_dir.mkdir(parents=True, exist_ok=True)
-            work_dir.mkdir(parents=True, exist_ok=True)
-            manifest = existing if existing and not self.options.force else _new_manifest(
-                job_id=job_id,
-                source=source_identity,
-                model=model_identity,
-                diar_model=diar_identity,
-                options=semantic,
-                tools=self._versions(),
-            )
-            manifest["state"] = "processing"
-            manifest["updated_at"] = _now()
-            atomic_write_json(manifest_path, manifest)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        manifest = existing if existing and not self.options.force else _new_manifest(
+            job_id=job_id,
+            source=source_identity,
+            model=model_identity,
+            diar_model=diar_identity,
+            options={**semantic, "requested_formats": list(self.options.formats)},
+            tools=tool_versions,
+        )
+        manifest.pop("error", None)
+        manifest["state"] = "processing"
+        manifest["updated_at"] = _now()
+        atomic_write_json(manifest_path, manifest)
 
+        prepared = PreparedJob(
+            source=source,
+            source_identity=source_identity,
+            model_identity=model_identity,
+            diar_identity=diar_identity,
+            job_id=job_id,
+            job_dir=job_dir,
+            work_dir=work_dir,
+            manifest_path=manifest_path,
+            canonical_path=canonical_path,
+            manifest=manifest,
+            audio_path=source,
+            duration=None,
+            passthrough=True,
+            started=started,
+        )
+
+        if not self.options.force and canonical_path.is_file() and manifest.get("state_detail") == "transcribed":
+            prepared.transcript = Transcript.load(canonical_path)
+            prepared.duration = prepared.transcript.duration
+            return prepared
+
+        try:
             media = probe_media(source, self.options.ffprobe, runner=self.runner)
             stream = select_audio_stream(media, self.options.audio_stream)
             manifest["media"] = media.to_dict()
@@ -143,89 +343,52 @@ class Pipeline:
             if not passthrough and not can_resume_audio:
                 step_started = time.monotonic()
                 normalize_audio(source, normalized_path, stream, self.options.ffmpeg, runner=self.runner)
-                manifest.setdefault("timings", {})["normalization_seconds"] = time.monotonic() - step_started
+                manifest.setdefault("timings", {})["normalization_seconds"] = (
+                    time.monotonic() - step_started
+                )
             manifest["state_detail"] = "normalized"
-            manifest["normalized_audio"] = {
-                "path": str(audio_path),
-                "passthrough": passthrough,
-            }
+            manifest["normalized_audio"] = {"path": str(audio_path), "passthrough": passthrough}
             atomic_write_json(manifest_path, manifest)
-
-            can_resume_transcript = (
-                not self.options.force
-                and canonical_path.is_file()
-                and manifest.get("state_detail") == "transcribed"
-            )
-            if can_resume_transcript:
-                transcript = Transcript.load(canonical_path)
-            else:
-                step_started = time.monotonic()
-                transcript = transcribe(
-                    audio_path,
-                    NemoOptions(
-                        executable=self.options.nemo_speech,
-                        model=self.options.model,
-                        device=self.options.device,
-                        diarize=self.options.diarize,
-                        diar_model=self.options.diar_model,
-                    ),
-                    duration=media.duration,
-                    runner=self.runner,
-                )
-                transcript.segments = build_segments(transcript)
-                transcript.provenance.update(
-                    {
-                        "source_sha256": source_identity["sha256"],
-                        "model_sha256": model_identity["sha256"],
-                    }
-                )
-                if diar_identity:
-                    transcript.provenance["diar_model_sha256"] = diar_identity["sha256"]
-                atomic_write_json(canonical_path, transcript.to_dict())
-                manifest.setdefault("timings", {})["inference_seconds"] = time.monotonic() - step_started
-            manifest["state_detail"] = "transcribed"
-            atomic_write_json(manifest_path, manifest)
-
-            self._render(job_dir, transcript)
-            artifacts = _artifact_manifest(job_dir, self.options.formats)
-            manifest["artifacts"] = artifacts
-            manifest["state"] = "completed"
-            manifest["state_detail"] = "completed"
-            manifest["updated_at"] = _now()
-            manifest.setdefault("timings", {})["total_seconds"] = time.monotonic() - started
-            atomic_write_json(manifest_path, manifest)
-
-            if not passthrough and not self.options.keep_audio:
-                normalized_path.unlink(missing_ok=True)
-                try:
-                    work_dir.rmdir()
-                except OSError:
-                    pass
-            return JobResult(str(source), str(job_dir), "completed")
+            prepared.audio_path = audio_path
+            prepared.duration = media.duration
+            prepared.passthrough = passthrough
+            return prepared
         except KeyboardInterrupt:
-            if manifest is not None and manifest_path is not None:
-                manifest["state"] = "interrupted"
-                manifest["updated_at"] = _now()
-                atomic_write_json(manifest_path, manifest)
+            self._mark_interrupted(prepared)
             raise
         except Exception as exc:
-            if manifest is not None and manifest_path is not None:
-                manifest["state"] = "failed"
-                manifest["updated_at"] = _now()
-                manifest["error"] = {"type": type(exc).__name__, "message": str(exc)}
-                manifest.setdefault("timings", {})["total_seconds"] = time.monotonic() - started
-                atomic_write_json(manifest_path, manifest)
-            return JobResult(
-                str(source),
-                str(manifest_path.parent) if manifest_path else "",
-                "failed",
-                error=str(exc),
-            )
+            return self._failed_result(source, exc, prepared)
+
+    def _complete(self, prepared: PreparedJob) -> JobResult:
+        if prepared.transcript is None:
+            raise InferenceError("Cannot complete a job without a transcript")
+        transcript = prepared.transcript
+        transcript.segments = transcript.segments or build_segments(transcript)
+        transcript.provenance.update(
+            {
+                "source_sha256": prepared.source_identity["sha256"],
+                "model_sha256": prepared.model_identity["sha256"],
+            }
+        )
+        if prepared.diar_identity:
+            transcript.provenance["diar_model_sha256"] = prepared.diar_identity["sha256"]
+        atomic_write_json(prepared.canonical_path, transcript.to_dict())
+        prepared.manifest["state_detail"] = "transcribed"
+        atomic_write_json(prepared.manifest_path, prepared.manifest)
+
+        self._render(prepared.job_dir, transcript)
+        prepared.manifest["artifacts"] = _artifact_manifest(prepared.job_dir)
+        prepared.manifest["state"] = "completed"
+        prepared.manifest["state_detail"] = "completed"
+        prepared.manifest["updated_at"] = _now()
+        prepared.manifest.setdefault("timings", {})["total_seconds"] = time.monotonic() - prepared.started
+        atomic_write_json(prepared.manifest_path, prepared.manifest)
+        self._cleanup_audio(prepared)
+        return JobResult(str(prepared.source), str(prepared.job_dir), "completed")
 
     def _render(self, job_dir: Path, transcript: Transcript) -> None:
+        atomic_write_json(job_dir / "transcript.json", transcript.to_dict())
         formats = set(self.options.formats)
-        if "json" in formats:
-            atomic_write_json(job_dir / "transcript.json", transcript.to_dict())
         if "txt" in formats:
             atomic_write_text(job_dir / "transcript.txt", render_text(transcript))
         segments = transcript.segments or build_segments(transcript)
@@ -234,18 +397,65 @@ class Pipeline:
         if "vtt" in formats:
             atomic_write_text(job_dir / "subtitles.vtt", render_vtt(segments))
 
+    def _cleanup_audio(self, prepared: PreparedJob) -> None:
+        if not prepared.passthrough and not self.options.keep_audio:
+            prepared.audio_path.unlink(missing_ok=True)
+            try:
+                prepared.work_dir.rmdir()
+            except OSError:
+                pass
+
+    def _mark_interrupted(self, prepared: PreparedJob) -> None:
+        prepared.manifest["state"] = "interrupted"
+        prepared.manifest["updated_at"] = _now()
+        atomic_write_json(prepared.manifest_path, prepared.manifest)
+
+    def _failed_result(
+        self,
+        source: Path,
+        exc: Exception,
+        prepared: PreparedJob | None,
+    ) -> JobResult:
+        if prepared is not None:
+            prepared.manifest["state"] = "failed"
+            prepared.manifest["updated_at"] = _now()
+            prepared.manifest["error"] = {"type": type(exc).__name__, "message": str(exc)}
+            prepared.manifest.setdefault("timings", {})["total_seconds"] = (
+                time.monotonic() - prepared.started
+            )
+            atomic_write_json(prepared.manifest_path, prepared.manifest)
+        return JobResult(
+            str(source),
+            str(prepared.job_dir) if prepared else "",
+            "failed",
+            error=str(exc),
+        )
+
+    def _nemo_options(self) -> NemoOptions:
+        return NemoOptions(
+            executable=self.options.nemo_speech,
+            model=self.options.model,
+            device=self.options.device,
+            diarize=self.options.diarize,
+            diar_model=self.options.diar_model,
+        )
+
     def _semantic_options(
         self,
         model_identity: dict[str, Any],
         diar_identity: dict[str, Any] | None,
+        tool_versions: dict[str, str],
     ) -> dict[str, Any]:
         return {
+            "pipeline_version": __version__,
+            "transcript_schema": SCHEMA_VERSION,
             "model_sha256": model_identity["sha256"],
             "diar_model_sha256": diar_identity["sha256"] if diar_identity else None,
             "device": self.options.device,
             "audio_stream": self.options.audio_stream,
             "diarize": self.options.diarize,
-            "formats": list(self.options.formats),
+            "ffmpeg_version": tool_versions["ffmpeg"],
+            "nemo_speech_version": tool_versions["nemo_speech"],
         }
 
     def _identity(self, path: Path | None) -> dict[str, Any]:
@@ -318,7 +528,7 @@ def _load_manifest_if_present(path: Path) -> dict[str, Any] | None:
     return payload
 
 
-def _artifact_manifest(job_dir: Path, formats: tuple[str, ...]) -> dict[str, Any]:
+def _artifact_manifest(job_dir: Path) -> dict[str, Any]:
     names = {
         "json": "transcript.json",
         "txt": "transcript.txt",
@@ -326,8 +536,8 @@ def _artifact_manifest(job_dir: Path, formats: tuple[str, ...]) -> dict[str, Any
         "vtt": "subtitles.vtt",
     }
     output: dict[str, Any] = {}
-    for format_name in dict.fromkeys(("json", *formats)):
-        path = job_dir / names[format_name]
+    for format_name, filename in names.items():
+        path = job_dir / filename
         if path.is_file():
             output[format_name] = {
                 "path": path.name,
@@ -335,6 +545,28 @@ def _artifact_manifest(job_dir: Path, formats: tuple[str, ...]) -> dict[str, Any
                 "sha256": sha256_file(path),
             }
     return output
+
+
+def _requested_artifacts_exist(job_dir: Path, formats: tuple[str, ...]) -> bool:
+    names = {
+        "json": "transcript.json",
+        "txt": "transcript.txt",
+        "srt": "subtitles.srt",
+        "vtt": "subtitles.vtt",
+    }
+    return (job_dir / "transcript.json").is_file() and all(
+        (job_dir / names[format_name]).is_file() for format_name in formats
+    )
+
+
+def _ordered_results(
+    sources: list[Path], results_by_source: dict[str, JobResult]
+) -> list[JobResult]:
+    return [
+        results_by_source[str(source)]
+        for source in sources
+        if str(source) in results_by_source
+    ]
 
 
 def _job_id(source: dict[str, Any], options: dict[str, Any]) -> str:
@@ -348,7 +580,8 @@ def _job_id(source: dict[str, Any], options: dict[str, Any]) -> str:
 
 def _job_dir_name(source: Path, job_id: str) -> str:
     safe_stem = re.sub(r"[^\w.-]+", "-", source.stem, flags=re.UNICODE).strip("-.") or "media"
-    return f"{safe_stem}-{job_id[:10]}"
+    path_id = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{safe_stem}-{job_id[:10]}-{path_id}"
 
 
 def _tool_version(argv: list[str], runner: Callable[..., CommandResult]) -> str:
@@ -358,6 +591,13 @@ def _tool_version(argv: list[str], runner: Callable[..., CommandResult]) -> str:
         return f"unavailable: {exc}"
     line = (result.stdout.strip() or result.stderr.strip()).splitlines()
     return line[0] if line else "unknown"
+
+
+def _link_or_copy(source: Path, destination: Path) -> None:
+    try:
+        os.symlink(source.resolve(), destination)
+    except OSError:
+        shutil.copyfile(source, destination)
 
 
 def _now() -> str:

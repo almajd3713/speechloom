@@ -31,17 +31,14 @@ def transcribe(
     duration: float | None = None,
     runner: Runner = run_command,
 ) -> Transcript:
-    if not options.model.is_file():
-        raise ModelError(f"ASR model does not exist: {options.model}")
-    if options.diarize and (options.diar_model is None or not options.diar_model.is_file()):
-        raise ModelError("Diarization requires an existing Sortformer model")
+    _validate_options(options)
 
     argv = [
         options.executable,
         "transcribe",
         str(audio),
         "--model", str(options.model),
-        "--json",
+        "--format", "json",
         "--word-times",
     ]
     if options.device != "auto":
@@ -66,6 +63,36 @@ def transcribe(
     if options.diar_model is not None and options.diarize:
         transcript.provenance["diar_model_path"] = str(options.diar_model.resolve())
     return transcript
+
+
+def transcribe_directory(
+    input_dir: Path,
+    output_dir: Path,
+    options: NemoOptions,
+    *,
+    concurrency: int,
+    runner: Runner = run_command,
+) -> CommandResult:
+    """Run native directory mode once so all inputs share one recognizer."""
+
+    _validate_options(options)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    argv = [
+        options.executable,
+        "transcribe",
+        str(input_dir),
+        "--recursive",
+        "--model", str(options.model),
+        "--format", "json",
+        "--word-times",
+        "--output-dir", str(output_dir),
+        "--concurrency", str(concurrency),
+    ]
+    if options.device != "auto":
+        argv.extend(["--device", options.device])
+    if options.diarize and options.diar_model is not None:
+        argv.extend(["--diar-model", str(options.diar_model)])
+    return runner(argv, check=False)
 
 
 def adapt_payload(payload: Any, *, duration: float | None = None) -> Transcript:
@@ -94,6 +121,12 @@ def adapt_payload(payload: Any, *, duration: float | None = None) -> Transcript:
     )
     transcript.validate()
     return transcript
+
+
+def map_native_failure(result: CommandResult) -> InferenceError:
+    """Map a non-zero native result without requiring CommandFailed."""
+
+    return _map_native_result(result)
 
 
 def _parse_json_output(stdout: str) -> Any:
@@ -183,11 +216,21 @@ def _join_words(words: list[Word]) -> str:
 
 
 def _map_native_failure(exc: CommandFailed) -> InferenceError:
-    code = exc.result.returncode
-    diagnostic = exc.result.stderr.strip() or exc.result.stdout.strip() or "unknown inference failure"
+    return _map_native_result(exc.result)
+
+
+def _map_native_result(result: CommandResult) -> InferenceError:
+    code = result.returncode
+    diagnostic = result.stderr.strip() or result.stdout.strip() or "unknown inference failure"
     if code == 3:
         return ModelError(f"NeMo model is missing: {diagnostic}")
     if code == 4:
         return UnsupportedFeatureError(f"NeMo feature is unsupported: {diagnostic}")
     return InferenceError(f"NeMo transcription failed: {diagnostic}", native_exit_code=code)
 
+
+def _validate_options(options: NemoOptions) -> None:
+    if not options.model.is_file():
+        raise ModelError(f"ASR model does not exist: {options.model}")
+    if options.diarize and (options.diar_model is None or not options.diar_model.is_file()):
+        raise ModelError("Diarization requires an existing Sortformer model")

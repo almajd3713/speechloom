@@ -12,7 +12,7 @@ Until both `nvidia-smi` and `nemo-speech doctor --json` report a usable CUDA dev
 
 ## The runtime bootstrap rejects CMake
 
-NeMo-Speech.cpp requires CMake 3.26 or newer. Ubuntu 22.04's default package can be older. Install a current CMake through an audited package source or an isolated Python tool environment, confirm `cmake --version`, and rerun the bootstrap.
+NeMo-Speech.cpp requires CMake 3.26 through 3.x. Ubuntu 22.04's default package can be older, while CMake 4.x rejects the policy floor in the pinned SentencePiece dependency. Run `scripts/bootstrap_build_tools.sh` to install the tested CMake and Ninja versions into `.runtime/tools`, then rerun the runtime bootstrap.
 
 ## A media file has no audio
 
@@ -35,4 +35,3 @@ Successful jobs remain complete. Inspect the failed job's `manifest.json` or run
 ## NeMo native exit codes
 
 The adapter preserves NeMo's stable distinction between runtime failures, invalid arguments, missing models, and unsupported features. The job manifest records the exception type and diagnostic message.
-

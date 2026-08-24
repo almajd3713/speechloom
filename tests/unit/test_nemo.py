@@ -52,6 +52,7 @@ class NemoAdapterTests(unittest.TestCase):
             )
             self.assertEqual(len(calls), 1)
             self.assertIn("--word-times", calls[0])
+            self.assertEqual(calls[0][calls[0].index("--format") + 1], "json")
             self.assertIn("--diar-model", calls[0])
             self.assertIn("cuda:0", calls[0])
             self.assertEqual(transcript.words[0].speaker, 1)
@@ -59,4 +60,3 @@ class NemoAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
