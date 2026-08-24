@@ -66,8 +66,7 @@ parakeet-transcribe --config config.ini transcribe recordings/ --recursive --wor
 parakeet-transcribe --config config.ini transcribe recording.mp4 --output-dir ./output
 ```
 
-For Russian transcription plus English translation, set these values in
-`config.ini`:
+For transcribing between different languages, set the translation model and source/target languages in `config.ini`:
 
 ```ini
 translation_model = .runtime/models/riva-translate-4b-instruct-v2.q8_0.gguf
