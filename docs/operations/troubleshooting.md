@@ -14,6 +14,10 @@ Until both `nvidia-smi` and `nemo-speech doctor --json` report a usable CUDA dev
 
 NeMo-Speech.cpp requires CMake 3.26 through 3.x. Ubuntu 22.04's default package can be older, while CMake 4.x rejects the policy floor in the pinned SentencePiece dependency. Run `scripts/bootstrap_build_tools.sh` to install the tested CMake and Ninja versions into `.runtime/tools`, then rerun the runtime bootstrap.
 
+## A custom runtime prefix installs in a temporary directory
+
+Update to a revision containing the relative-prefix fix and rerun the bootstrap. Relative `--prefix` values are resolved from the repository root; absolute paths are used unchanged. A failed run that installed below `/tmp/.../NeMo-Speech.cpp` was removed safely with the temporary build tree and must be rebuilt.
+
 ## A media file has no audio
 
 Inspect streams with:

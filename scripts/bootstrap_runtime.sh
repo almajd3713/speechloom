@@ -13,6 +13,7 @@ fi
 
 usage() {
     echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY]"
+    echo "Relative prefixes are resolved from the repository root."
 }
 
 while [[ $# -gt 0 ]]; do
@@ -38,6 +39,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$install_prefix" != /* ]]; then
+    install_prefix="${project_root}/${install_prefix#./}"
+fi
 
 case "$backend" in
     cpu|cuda|vulkan) ;;
