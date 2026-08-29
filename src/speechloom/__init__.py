@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 from .config import Settings
 from .contracts import (
     ArtifactDetails,
+    CancellationController,
     CancellationToken,
     JobDetails,
     StageEvent,
@@ -17,6 +18,7 @@ from .setup import SetupManager, SetupRequest, SetupResult, SetupStatus
 
 __all__ = [
     "ArtifactDetails",
+    "CancellationController",
     "CancellationToken",
     "DoctorReport",
     "JobDetails",

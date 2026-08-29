@@ -9,6 +9,12 @@ class PipelineError(Exception):
     exit_code = 1
 
 
+class CancellationError(PipelineError):
+    """The caller requested cancellation of an active operation."""
+
+    exit_code = 130
+
+
 class ConfigurationError(PipelineError):
     exit_code = 2
 

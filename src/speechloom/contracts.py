@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import threading
 from typing import Any, Protocol, runtime_checkable
 
-from .errors import ConfigurationError
+from .errors import CancellationError, ConfigurationError
 
 
 @dataclass(frozen=True)
@@ -56,7 +58,7 @@ class StageEvent:
     message: str
     completed: int | None = None
     total: int | None = None
-    timestamp: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 @runtime_checkable
@@ -64,6 +66,23 @@ class CancellationToken(Protocol):
     def is_cancelled(self) -> bool: ...
 
     def raise_if_cancelled(self) -> None: ...
+
+
+class CancellationController:
+    """Thread-safe cancellation source that also implements ``CancellationToken``."""
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.is_cancelled():
+            raise CancellationError("Operation cancelled")
 
 
 @dataclass(frozen=True)
