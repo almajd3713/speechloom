@@ -76,6 +76,47 @@ class FakeTools:
 
 
 class PipelineContractTests(unittest.TestCase):
+    def test_inference_gate_does_not_serialize_media_preparation(self) -> None:
+        class TrackingGate:
+            def __init__(self) -> None:
+                self.depth = 0
+                self.entries = 0
+
+            def __enter__(self):
+                self.depth += 1
+                self.entries += 1
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                self.depth -= 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "media.mp4"
+            model = root / "model.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            tools = FakeTools()
+            gate = TrackingGate()
+
+            def runner(argv, **kwargs):
+                command = tuple(str(part) for part in argv)
+                is_inference = command[:2] == ("nemo-speech", "transcribe")
+                if is_inference:
+                    self.assertEqual(gate.depth, 1)
+                else:
+                    self.assertEqual(gate.depth, 0)
+                return tools(argv, **kwargs)
+
+            result = Pipeline(
+                PipelineOptions(output_dir=root / "out", model=model),
+                runner=runner,
+                inference_gate=gate,
+            ).run([source])[0]
+
+            self.assertEqual(result.state, "completed")
+            self.assertEqual(gate.entries, 1)
+
     def test_single_pass_artifacts_and_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

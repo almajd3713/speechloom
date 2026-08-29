@@ -12,8 +12,15 @@ from .contracts import (
     TranscriptionRequest,
 )
 from .doctor import DoctorReport
-from .errors import CancellationError
+from .errors import (
+    CancellationError,
+    DuplicateJobError,
+    JobManagerError,
+    JobNotFoundError,
+    JobQueueFullError,
+)
 from .jobs import JobResult
+from .job_manager import JobEvent, JobManager, ManagedJob
 from .service import TranscriptionService
 from .setup import SetupManager, SetupRequest, SetupResult, SetupStatus
 
@@ -23,7 +30,14 @@ __all__ = [
     "CancellationError",
     "CancellationToken",
     "DoctorReport",
+    "DuplicateJobError",
     "JobDetails",
+    "JobEvent",
+    "JobManager",
+    "JobManagerError",
+    "JobNotFoundError",
+    "JobQueueFullError",
+    "ManagedJob",
     "JobResult",
     "Settings",
     "SetupManager",

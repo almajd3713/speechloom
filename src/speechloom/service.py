@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from .config import Settings, load_managed_settings
 from .contracts import CancellationToken, JobDetails, StageEvent, TranscriptionRequest
@@ -41,6 +42,7 @@ class TranscriptionService:
         *,
         on_event: EventSink | None = None,
         cancellation: CancellationToken | None = None,
+        inference_gate: AbstractContextManager[Any] | None = None,
     ) -> list[JobResult]:
         if cancellation is not None:
             cancellation.raise_if_cancelled()
@@ -68,6 +70,7 @@ class TranscriptionService:
             runner=self._runner,
             on_event=on_event,
             cancellation=cancellation,
+            inference_gate=inference_gate,
         ).run(sources)
 
     def inspect(self, job: Path | str) -> JobDetails:

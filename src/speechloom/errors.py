@@ -15,6 +15,22 @@ class CancellationError(PipelineError):
     exit_code = 130
 
 
+class JobManagerError(PipelineError):
+    """Base error for local background job coordination."""
+
+
+class JobNotFoundError(JobManagerError):
+    pass
+
+
+class JobQueueFullError(JobManagerError):
+    pass
+
+
+class DuplicateJobError(JobManagerError):
+    pass
+
+
 class ConfigurationError(PipelineError):
     exit_code = 2
 

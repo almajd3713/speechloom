@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -111,6 +112,7 @@ class Pipeline:
         runner: Callable[..., CommandResult] = run_command,
         on_event: Callable[[StageEvent], None] | None = None,
         cancellation: CancellationToken | None = None,
+        inference_gate: AbstractContextManager[Any] | None = None,
     ) -> None:
         if options.workers < 1:
             raise ConfigurationError("workers must be at least 1")
@@ -129,6 +131,7 @@ class Pipeline:
         self._runner = runner
         self._on_event = on_event
         self._cancellation = cancellation
+        self._inference_gate = inference_gate
         self._event_lock = threading.RLock()
         self.runner = self._run_command
         self._identity_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
@@ -187,6 +190,9 @@ class Pipeline:
         with self._event_lock:
             self._on_event(event)
 
+    def _inference(self) -> AbstractContextManager[Any]:
+        return self._inference_gate if self._inference_gate is not None else nullcontext()
+
     def run_one(self, source: Path) -> JobResult:
         prepared: PreparedJob | None = None
         try:
@@ -203,12 +209,13 @@ class Pipeline:
                     prepared=prepared,
                 )
                 step_started = time.monotonic()
-                prepared.transcript = transcribe(
-                    prepared.audio_path,
-                    self._nemo_options(),
-                    duration=prepared.duration,
-                    runner=self.runner,
-                )
+                with self._inference():
+                    prepared.transcript = transcribe(
+                        prepared.audio_path,
+                        self._nemo_options(),
+                        duration=prepared.duration,
+                        runner=self.runner,
+                    )
                 prepared.manifest.setdefault("timings", {})["inference_seconds"] = (
                     time.monotonic() - step_started
                 )
@@ -340,13 +347,14 @@ class Pipeline:
             output_dir.mkdir()
             staged = self._stage_batch(pending, input_dir)
             step_started = time.monotonic()
-            command_result = transcribe_directory(
-                input_dir,
-                output_dir,
-                self._nemo_options(),
-                concurrency=self.options.workers,
-                runner=self.runner,
-            )
+            with self._inference():
+                command_result = transcribe_directory(
+                    input_dir,
+                    output_dir,
+                    self._nemo_options(),
+                    concurrency=self.options.workers,
+                    runner=self.runner,
+                )
             elapsed = time.monotonic() - step_started
             return self._collect_batch_results(staged, output_dir, command_result, elapsed)
 
@@ -677,11 +685,12 @@ class Pipeline:
             raise InferenceError("Cannot translate an empty transcript")
 
         step_started = time.monotonic()
-        translated_texts = translate_texts(
-            source_texts,
-            self._translation_options(),
-            runner=self.runner,
-        )
+        with self._inference():
+            translated_texts = translate_texts(
+                source_texts,
+                self._translation_options(),
+                runner=self.runner,
+            )
         elapsed = time.monotonic() - step_started
         for prepared, start, end in ranges:
             self._check_cancelled()
