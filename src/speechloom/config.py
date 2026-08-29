@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 import os
 from pathlib import Path
 import re
 from typing import Any, Mapping
 
 from .errors import ConfigurationError
+from .runtime import AppPaths, InstallState, load_install_state
 
 
 ENV_PREFIX = "SPEECHLOOM_"
@@ -55,6 +56,61 @@ def load_settings(
     if cli_values:
         values.update({key: value for key, value in cli_values.items() if value is not None})
     return _coerce_settings(values)
+
+
+def load_managed_settings(
+    *,
+    config_path: Path | None = None,
+    cli_values: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Settings:
+    """Load normal precedence first, then fill unset values from managed state."""
+
+    environ = env if env is not None else os.environ
+    settings = load_settings(
+        config_path=config_path,
+        cli_values=cli_values,
+        env=environ,
+    )
+    core_requires_managed = bool(
+        settings.nemo_speech == Settings.nemo_speech or settings.model is None
+    )
+    paths = AppPaths.from_environment(environ)
+    try:
+        state = load_install_state(paths.state_file)
+    except ConfigurationError:
+        if core_requires_managed:
+            raise
+        return settings
+    return resolve_managed_settings(settings, state)
+
+
+def resolve_managed_settings(
+    settings: Settings,
+    state: InstallState | None,
+) -> Settings:
+    if state is None:
+        return settings
+    runtime = state.runtime
+    asr = state.model("asr")
+    diarization = state.model("diarization")
+    translation = state.model("translation")
+    return replace(
+        settings,
+        nemo_speech=(
+            runtime.path
+            if runtime is not None and settings.nemo_speech == Settings.nemo_speech
+            else settings.nemo_speech
+        ),
+        model=settings.model or (asr.path if asr is not None else None),
+        diar_model=settings.diar_model or (
+            diarization.path if diarization is not None else None
+        ),
+        translation_model=settings.translation_model or (
+            translation.path if translation is not None else None
+        ),
+        device=state.backend if settings.device == "auto" else settings.device,
+    )
 
 
 def _read_config(path: Path) -> dict[str, str]:
@@ -106,10 +162,9 @@ def _coerce_settings(values: Mapping[str, Any]) -> Settings:
     translation_model = _none_if_empty(values.get("translation_model"))
     source_language = _language_code(values.get("source_language"), "source_language")
     translate_to = _language_code(values.get("translate_to"), "translate_to")
-    configured_translation_values = (translation_model, source_language, translate_to)
-    if any(configured_translation_values) and not all(configured_translation_values):
+    if bool(source_language) != bool(translate_to):
         raise ConfigurationError(
-            "translation_model, source_language, and translate_to must be configured together"
+            "source_language and translate_to must be configured together"
         )
     if source_language and source_language == translate_to:
         raise ConfigurationError("source_language and translate_to must be different")

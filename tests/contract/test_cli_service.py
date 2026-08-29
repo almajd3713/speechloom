@@ -11,18 +11,40 @@ from speechloom.config import Settings
 from speechloom.contracts import JobDetails, TranscriptionRequest
 from speechloom.doctor import Check, DoctorReport
 from speechloom.jobs import JobResult
+from speechloom.setup import SetupStatus
 
 
 class CliServiceContractTests(unittest.TestCase):
+    @patch("speechloom.cli.SetupManager")
+    def test_setup_status_does_not_load_transcription_settings(
+        self,
+        manager_type: Mock,
+    ) -> None:
+        manager_type.return_value.status.return_value = SetupStatus(
+            installed=True,
+            ready=True,
+            state_file="/data/install.json",
+            config_file="/config/config.ini",
+            backend="cuda",
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            exit_code = main(["setup", "status", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        manager_type.assert_called_once_with(config_path=None)
+        self.assertIn('"ready": true', output.getvalue())
+
     @patch("speechloom.cli.TranscriptionService")
-    @patch("speechloom.cli.load_settings")
+    @patch("speechloom.cli.load_managed_settings")
     def test_transcribe_delegates_to_service(
         self,
-        load_settings: Mock,
+        load_managed_settings: Mock,
         service_type: Mock,
     ) -> None:
         settings = Settings(model="model.gguf", output_dir="configured-output")
-        load_settings.return_value = settings
+        load_managed_settings.return_value = settings
         service = service_type.return_value
         service.transcribe.return_value = [
             JobResult("recording.mp4", "configured-output/job", "completed")
@@ -52,7 +74,7 @@ class CliServiceContractTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         service_type.assert_called_once_with(settings)
-        load_settings.assert_called_once()
+        load_managed_settings.assert_called_once()
         request = service.transcribe.call_args.args[0]
         self.assertIsInstance(request, TranscriptionRequest)
         self.assertEqual(request.inputs, (Path("recording.mp4"),))
@@ -63,14 +85,14 @@ class CliServiceContractTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "CREATED recording.mp4 -> configured-output/job\n")
 
     @patch("speechloom.cli.TranscriptionService")
-    @patch("speechloom.cli.load_settings")
+    @patch("speechloom.cli.load_managed_settings")
     def test_doctor_delegates_to_service(
         self,
-        load_settings: Mock,
+        load_managed_settings: Mock,
         service_type: Mock,
     ) -> None:
         settings = Settings()
-        load_settings.return_value = settings
+        load_managed_settings.return_value = settings
         service = service_type.return_value
         service.doctor.return_value = DoctorReport(
             True,
@@ -87,10 +109,10 @@ class CliServiceContractTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "[OK] runtime: ready\nReady.\n")
 
     @patch("speechloom.cli.TranscriptionService")
-    @patch("speechloom.cli.load_settings")
+    @patch("speechloom.cli.load_managed_settings")
     def test_inspect_delegates_without_loading_runtime_config(
         self,
-        load_settings: Mock,
+        load_managed_settings: Mock,
         service_type: Mock,
     ) -> None:
         service = service_type.return_value
@@ -116,7 +138,7 @@ class CliServiceContractTests(unittest.TestCase):
             exit_code = main(["inspect", "job-directory"])
 
         self.assertEqual(exit_code, 0)
-        load_settings.assert_not_called()
+        load_managed_settings.assert_not_called()
         service_type.assert_called_once_with(Settings())
         service.inspect.assert_called_once_with(Path("job-directory"))
         self.assertEqual(

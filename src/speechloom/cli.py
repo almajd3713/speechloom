@@ -10,10 +10,11 @@ import sys
 from typing import Any, Sequence
 
 from . import __version__
-from .config import Settings, load_settings
+from .config import Settings, load_managed_settings
 from .contracts import TranscriptionRequest
-from .errors import PipelineError
+from .errors import ConfigurationError, PipelineError
 from .service import TranscriptionService
+from .setup import SetupManager, SetupRequest
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +25,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--config", type=Path, help="INI configuration file")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    setup = subparsers.add_parser("setup", help="Install and verify managed runtime assets")
+    setup.add_argument("--backend", choices=("auto", "cpu", "cuda", "vulkan"), default="auto")
+    setup.add_argument("--features", help="Comma-separated: translation,diarization")
+    setup.add_argument("--from-source", action="store_true", help="Build the runtime from pinned source")
+    setup.add_argument("--keep-cache", action="store_true", help="Keep converter and model caches")
+    setup.add_argument("--json", action="store_true", help="Emit machine-readable setup results")
+    setup_actions = setup.add_subparsers(dest="setup_action")
+    setup_status = setup_actions.add_parser("status", help="Verify managed installation state")
+    setup_status.add_argument("--json", action="store_true", help="Emit machine-readable status")
+    setup_clean = setup_actions.add_parser("clean", help="Remove managed setup caches")
+    setup_clean.add_argument("--downloads", action="store_true", help="Remove cached downloads")
+    setup_clean.add_argument("--build-tools", action="store_true", help="Remove isolated build tools")
+    setup_clean.add_argument("--all", action="store_true", dest="all_cache", help="Remove all setup caches")
 
     doctor = subparsers.add_parser("doctor", help="Validate runtime, models, backend, and output")
     _add_runtime_options(doctor)
@@ -88,10 +103,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "setup":
+            return _setup(args, SetupManager(config_path=args.config))
         if args.command == "inspect":
             return _inspect(args, TranscriptionService(Settings()))
         cli_values = _settings_cli_values(args)
-        settings = load_settings(config_path=args.config, cli_values=cli_values)
+        settings = load_managed_settings(config_path=args.config, cli_values=cli_values)
         service = TranscriptionService(settings)
         if args.command == "doctor":
             return _doctor(args, service)
@@ -108,6 +125,70 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 2
+
+
+def _setup(args: argparse.Namespace, manager: SetupManager) -> int:
+    if args.setup_action == "status":
+        status = manager.status()
+        if args.json:
+            print(json.dumps(status.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print("Ready." if status.ready else "Not ready.")
+            print(f"State: {status.state_file}")
+            if status.backend:
+                print(f"Backend: {status.backend}")
+            for issue in status.issues:
+                print(f"Issue: {issue}")
+        return 0 if status.ready else 1
+    if args.setup_action == "clean":
+        if not (args.downloads or args.build_tools or args.all_cache):
+            raise ConfigurationError("setup clean requires --downloads, --build-tools, or --all")
+        removed = manager.clean(
+            downloads=args.downloads,
+            build_tools=args.build_tools,
+            all_cache=args.all_cache,
+        )
+        for path in removed:
+            print(f"Removed {path}")
+        if not removed:
+            print("Nothing to clean.")
+        return 0
+
+    features = tuple(
+        part.strip().lower()
+        for part in (args.features or "").split(",")
+        if part.strip()
+    )
+    result = manager.setup(
+        SetupRequest(
+            backend=args.backend,
+            features=features,
+            from_source=args.from_source,
+            keep_cache=args.keep_cache,
+        ),
+        on_stage=(lambda message: print(f"[setup] {message}", file=sys.stderr)),
+    )
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "ready": result.ready,
+                    "actions": list(result.actions),
+                    "state": result.state.to_dict(),
+                    "doctor": result.doctor.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        for action in result.actions:
+            print(action.capitalize() + ".")
+        if not result.actions:
+            print("Managed assets are already current.")
+        print(f"Configuration: {result.state.config_path}")
+        print("Ready." if result.ready else "Setup completed, but diagnostics found errors.")
+    return 0 if result.ready else 1
 
 
 def _doctor(args: argparse.Namespace, service: TranscriptionService) -> int:

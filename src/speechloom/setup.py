@@ -260,17 +260,34 @@ class SetupManager:
         return tuple(removed)
 
     def _resolve_backend(self, requested: str, state: InstallState | None) -> str:
-        if requested != "auto":
-            if requested == "cuda" and not _command_available("nvidia-smi"):
-                raise SetupError("CUDA requested but nvidia-smi is unavailable")
+        if requested in {"cpu", "vulkan"}:
             return requested
-        if state and state.backend in self.registry.runtime.backends:
+        gpu_usable = self._gpu_usable()
+        if requested == "cuda":
+            if gpu_usable:
+                return requested
+            raise SetupError(
+                "CUDA requested but nvidia-smi could not communicate with the GPU"
+            )
+        if (
+            state
+            and state.backend in self.registry.runtime.backends
+            and (state.backend != "cuda" or gpu_usable)
+        ):
             return state.backend
-        if self._legacy_executable("cuda") and _command_available("nvidia-smi"):
+        if self._legacy_executable("cuda") and gpu_usable:
             return "cuda"
-        if _command_available("nvidia-smi") and _command_available("nvcc"):
+        if gpu_usable and _command_available("nvcc"):
             return "cuda"
         return "cpu"
+
+    def _gpu_usable(self) -> bool:
+        if not _command_available("nvidia-smi"):
+            return False
+        try:
+            return self.runner(["nvidia-smi"], check=False).returncode == 0
+        except PipelineError:
+            return False
 
     def _reuse_runtime(
         self,
@@ -546,7 +563,7 @@ class SetupManager:
             "machine": platform.machine(),
             "release": release,
             "wsl": bool(os.environ.get("WSL_DISTRO_NAME") or "microsoft" in release.lower()),
-            "gpu_visible": _command_available("nvidia-smi"),
+            "gpu_visible": self._gpu_usable(),
         }
 
 

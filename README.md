@@ -19,63 +19,62 @@ Install the Python package:
 python3 -m pip install --user -e .
 ```
 
-Install the repository-local build tools, build NeMo-Speech.cpp, and download
-the model:
+Install the runtime and ASR model:
 
 ```bash
-./scripts/bootstrap_build_tools.sh
-./scripts/bootstrap_runtime.sh --backend cpu
-./scripts/download_model.sh
+speechloom setup
 ```
 
-For CUDA:
+Speechloom selects CUDA when both the WSL GPU and CUDA compiler are available.
+You can select a backend explicitly:
 
 ```bash
-./scripts/bootstrap_runtime.sh \
-  --backend cuda \
-  --prefix .runtime/nemo-speech-cuda
+speechloom setup --backend cuda
 ```
 
-To enable local translation, build the runtime with NMT and convert the pinned
-Riva Translate model (the conversion needs about 16 GiB free):
+To install translation support (about 16 GiB of free space is needed during
+conversion):
 
 ```bash
-./scripts/bootstrap_runtime.sh \
-  --backend cuda \
-  --prefix .runtime/nemo-speech-cuda \
-  --with-nmt
-./scripts/bootstrap_translation_model.sh
+speechloom setup --backend cuda --features translation
 ```
 
-Copy `config.example.ini` and set `nemo_speech`, `model`, and `device` for the
-runtime you built.
+Setup writes configuration under `~/.config/speechloom` and managed assets
+under `~/.local/share/speechloom`. It respects the standard XDG environment
+variables. Existing repository-local `.runtime` assets are imported in place;
+they are not moved or deleted.
 
-The complete repository-local procedure is retained as the
-[setup fallback](docs/operations/repository-local-setup.md) during the managed-setup
-migration.
+Check setup state or remove setup caches with:
+
+```bash
+speechloom setup status
+speechloom setup clean --all
+```
+
+The [repository-local setup](docs/operations/repository-local-setup.md) remains
+available for development and troubleshooting.
 
 ## Usage
 
 Check the installation:
 
 ```bash
-speechloom --config config.ini doctor
+speechloom doctor
 ```
 
 Transcribe one or more files:
 
 ```bash
-speechloom --config config.ini transcribe recording.mp4
-speechloom --config config.ini transcribe recordings/ --recursive --workers 2
-speechloom --config config.ini transcribe recording.mp4 --output-dir ./output
+speechloom transcribe recording.mp4
+speechloom transcribe recordings/ --recursive --workers 2
+speechloom transcribe recording.mp4 --output-dir ./output
 ```
 
-For transcribing between different languages, set the translation model and source/target languages in `config.ini`:
+To translate a transcript, install the translation feature and provide the
+source and target languages:
 
-```ini
-translation_model = .runtime/models/riva-translate-4b-instruct-v2.q8_0.gguf
-source_language = ru
-translate_to = en
+```bash
+speechloom transcribe russian.mp4 --source-language ru --translate-to en
 ```
 
 The original files remain `transcript.*` and `subtitles.*`. Translated files are
@@ -101,7 +100,8 @@ Settings are read in this order:
 3. the selected INI file
 4. defaults
 
-See `config.example.ini` for available settings.
+The default file is `~/.config/speechloom/config.ini`. `--config` still selects
+an explicit file. See `config.example.ini` for available settings.
 
 ## Tests
 
@@ -114,5 +114,5 @@ Real-runtime tests are enabled by setting `SPEECHLOOM_TEST_NEMO`,
 
 ## License
 
-The project is licensed under Apache-2.0. Models are distributed separately
+The project is licensed under MIT. Models are distributed separately
 under their respective licenses.

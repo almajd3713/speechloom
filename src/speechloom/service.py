@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .config import Settings, load_settings
+from .config import Settings, load_managed_settings
 from .contracts import CancellationToken, JobDetails, StageEvent, TranscriptionRequest
 from .doctor import DoctorReport, run_doctor
 from .errors import ConfigurationError
@@ -33,7 +33,7 @@ class TranscriptionService:
         env: Mapping[str, str] | None = None,
         runner: Runner = run_command,
     ) -> "TranscriptionService":
-        return cls(load_settings(config_path=config_path, env=env), runner=runner)
+        return cls(load_managed_settings(config_path=config_path, env=env), runner=runner)
 
     def transcribe(
         self,
@@ -54,6 +54,12 @@ class TranscriptionService:
         if request.diarize and not self._settings.diar_model:
             raise ConfigurationError(
                 "--diarize requires --diar-model or SPEECHLOOM_DIAR_MODEL"
+            )
+        source_language = request.source_language or self._settings.source_language
+        translate_to = request.translate_to or self._settings.translate_to
+        if (source_language or translate_to) and not self._settings.translation_model:
+            raise ConfigurationError(
+                "Translation was requested but no translation model is configured or managed"
             )
 
         sources = discover_inputs(list(request.inputs), recursive=request.recursive)

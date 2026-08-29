@@ -1,0 +1,17 @@
+usage: speechloom setup [-h] [--backend {auto,cpu,cuda,vulkan}]
+                        [--features FEATURES] [--from-source] [--keep-cache]
+                        [--json]
+                        {status,clean} ...
+
+positional arguments:
+  {status,clean}
+    status              Verify managed installation state
+    clean               Remove managed setup caches
+
+options:
+  -h, --help            show this help message and exit
+  --backend {auto,cpu,cuda,vulkan}
+  --features FEATURES   Comma-separated: translation,diarization
+  --from-source         Build the runtime from pinned source
+  --keep-cache          Keep converter and model caches
+  --json                Emit machine-readable setup results

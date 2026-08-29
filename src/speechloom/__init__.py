@@ -13,6 +13,7 @@ from .contracts import (
 from .doctor import DoctorReport
 from .jobs import JobResult
 from .service import TranscriptionService
+from .setup import SetupManager, SetupRequest, SetupResult, SetupStatus
 
 __all__ = [
     "ArtifactDetails",
@@ -21,6 +22,10 @@ __all__ = [
     "JobDetails",
     "JobResult",
     "Settings",
+    "SetupManager",
+    "SetupRequest",
+    "SetupResult",
+    "SetupStatus",
     "StageEvent",
     "TranscriptionRequest",
     "TranscriptionService",

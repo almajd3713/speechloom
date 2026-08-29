@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from speechloom.doctor import DoctorReport
 from speechloom.process import CommandResult
@@ -22,6 +23,8 @@ class FakeInstaller:
         del kwargs
         command = tuple(str(item) for item in argv)
         self.calls.append(command)
+        if command == ("nvidia-smi",):
+            return CommandResult(command, 1, "", "unavailable")
         if command[:2] == ("cmake", "--version"):
             return CommandResult(command, 0, "cmake version 3.31.10\n", "")
         if "bootstrap_runtime.sh" in command[1]:
@@ -60,6 +63,19 @@ def _paths(root: Path) -> AppPaths:
 
 
 class SetupManagerTests(unittest.TestCase):
+    @patch("speechloom.setup._command_available", return_value=True)
+    def test_auto_backend_requires_a_working_gpu_probe(self, available) -> None:
+        del available
+
+        def blocked_gpu(argv, **kwargs):
+            del kwargs
+            command = tuple(str(item) for item in argv)
+            return CommandResult(command, 1, "", "GPU access blocked")
+
+        manager = SetupManager(runner=blocked_gpu, repository_root=Path("/missing"))
+
+        self.assertEqual(manager._resolve_backend("auto", None), "cpu")
+
     def test_setup_builds_once_and_rerun_only_verifies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

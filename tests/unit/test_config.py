@@ -5,8 +5,9 @@ import tempfile
 import unittest
 
 from speechloom.cli import build_parser
-from speechloom.config import default_config_path, load_settings
+from speechloom.config import default_config_path, load_managed_settings, load_settings
 from speechloom.errors import ConfigurationError
+from speechloom.runtime import InstallState, InstalledArtifact, save_install_state
 
 
 class SettingsTests(unittest.TestCase):
@@ -101,6 +102,51 @@ class SettingsTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ConfigurationError, "expected auto, cpu"):
             load_settings(cli_values={"device": "cuda[:0] # cpu, cuda"}, env={})
+
+    def test_managed_state_fills_only_unset_runtime_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_CACHE_HOME": str(root / "cache"),
+            }
+            state_path = root / "data/speechloom/install.json"
+            save_install_state(
+                state_path,
+                InstallState(
+                    backend="cuda",
+                    features=("translation",),
+                    config_path=str(root / "config/speechloom/config.ini"),
+                    runtime=InstalledArtifact(
+                        "runtime", "runtime", "/managed/nemo-speech"
+                    ),
+                    models=(
+                        InstalledArtifact("asr", "asr", "/managed/asr.gguf"),
+                        InstalledArtifact(
+                            "translation", "translation", "/managed/translation.gguf"
+                        ),
+                    ),
+                ),
+            )
+
+            managed = load_managed_settings(env=env)
+            overridden = load_managed_settings(
+                env=env,
+                cli_values={
+                    "nemo_speech": "/custom/nemo-speech",
+                    "model": "/custom/asr.gguf",
+                    "device": "cpu",
+                },
+            )
+
+        self.assertEqual(managed.nemo_speech, "/managed/nemo-speech")
+        self.assertEqual(managed.model, "/managed/asr.gguf")
+        self.assertEqual(managed.translation_model, "/managed/translation.gguf")
+        self.assertEqual(managed.device, "cuda")
+        self.assertEqual(overridden.nemo_speech, "/custom/nemo-speech")
+        self.assertEqual(overridden.model, "/custom/asr.gguf")
+        self.assertEqual(overridden.device, "cpu")
 
 
 if __name__ == "__main__":

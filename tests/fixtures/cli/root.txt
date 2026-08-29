@@ -1,10 +1,11 @@
 usage: speechloom [-h] [--version] [--config CONFIG]
-                  {doctor,transcribe,inspect} ...
+                  {setup,doctor,transcribe,inspect} ...
 
 Transcribe local audio and video with NeMo-Speech.cpp.
 
 positional arguments:
-  {doctor,transcribe,inspect}
+  {setup,doctor,transcribe,inspect}
+    setup               Install and verify managed runtime assets
     doctor              Validate runtime, models, backend, and output
     transcribe          Transcribe one or more media inputs
     inspect             Inspect a job directory or manifest
