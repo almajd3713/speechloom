@@ -29,6 +29,7 @@ class RuntimeReleaseContractTests(unittest.TestCase):
         self.assertIn("actions/checkout@v6", workflow)
         self.assertIn("actions/upload-artifact@v7", workflow)
         self.assertIn("actions/download-artifact@v8", workflow)
+        self.assertEqual(workflow.count("python3-venv"), 2)
         self.assertIn("Open registry promotion pull request", workflow)
         self.assertIn("gh pr create", workflow)
 

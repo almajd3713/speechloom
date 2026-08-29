@@ -27,7 +27,11 @@ if [[ "$tool_environment" != /* ]]; then
     tool_environment="${project_root}/${tool_environment#./}"
 fi
 
-python3 -m venv "$tool_environment"
+if ! python3 -m venv "$tool_environment"; then
+    echo "Unable to create the build-tools virtual environment." >&2
+    echo "On Debian/Ubuntu, install the version-matched python3-venv package and retry." >&2
+    exit 1
+fi
 "${tool_environment}/bin/pip" install \
     "cmake==3.31.10" \
     "ninja==1.13.0"
