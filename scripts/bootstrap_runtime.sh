@@ -6,12 +6,13 @@ runtime_ref="4f9676226f667d14608487df744f375db87127f8"
 runtime_url="https://github.com/NVIDIA/NeMo-Speech.cpp.git"
 backend="cpu"
 with_nmt="OFF"
+skip_gpu_check="false"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_prefix="${project_root}/.runtime/nemo-speech"
 tools_prefix="${project_root}/.runtime/tools"
 
 usage() {
-    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--tools-prefix DIRECTORY] [--with-nmt]"
+    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--tools-prefix DIRECTORY] [--with-nmt] [--skip-gpu-check]"
     echo "Relative prefixes are resolved from the repository root."
 }
 
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --with-nmt)
             with_nmt="ON"
+            shift
+            ;;
+        --skip-gpu-check)
+            skip_gpu_check="true"
             shift
             ;;
         -h|--help)
@@ -80,14 +85,16 @@ if (( cmake_major < 3 || (cmake_major == 3 && cmake_minor < 26) || cmake_major >
 fi
 
 if [[ "$backend" == "cuda" ]]; then
-    command -v nvidia-smi >/dev/null 2>&1 || {
-        echo "CUDA requested but nvidia-smi is unavailable." >&2
-        exit 3
-    }
-    nvidia-smi >/dev/null || {
-        echo "CUDA requested but nvidia-smi cannot communicate with the GPU." >&2
-        exit 3
-    }
+    if [[ "$skip_gpu_check" != "true" ]]; then
+        command -v nvidia-smi >/dev/null 2>&1 || {
+            echo "CUDA requested but nvidia-smi is unavailable." >&2
+            exit 3
+        }
+        nvidia-smi >/dev/null || {
+            echo "CUDA requested but nvidia-smi cannot communicate with the GPU." >&2
+            exit 3
+        }
+    fi
     command -v nvcc >/dev/null 2>&1 || {
         echo "CUDA source builds require nvcc from a supported CUDA toolkit." >&2
         exit 3

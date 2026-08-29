@@ -143,6 +143,9 @@ class SetupManagerTests(unittest.TestCase):
             executable.parent.mkdir(parents=True)
             executable.write_bytes(b"prebuilt-runtime")
             executable.chmod(0o755)
+            license_file = prefix / "share/licenses/nemo-speech/LICENSE"
+            license_file.parent.mkdir(parents=True)
+            license_file.write_text("fixture license\n", encoding="utf-8")
             filename = "speechloom-runtime-fixture-cpu-linux-x86_64.tar.gz"
             archive_path = root / filename
             archive_sha = build_runtime_archive(

@@ -1,0 +1,147 @@
+name: Native runtime release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: GitHub release tag for the runtime archives
+        required: true
+        type: string
+      publish:
+        description: Publish archives to the GitHub release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  RUNTIME_REVISION: 4f9676226f667d14608487df744f375db87127f8
+  SOURCE_DATE_EPOCH: "0"
+
+jobs:
+  cpu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build git curl ca-certificates python3
+      - name: Install pinned CMake
+        run: scripts/bootstrap_build_tools.sh --prefix .runtime/tools
+      - name: Build CPU runtime
+        run: |
+          export PATH="$PWD/.runtime/tools/bin:$PATH"
+          scripts/bootstrap_runtime.sh --backend cpu --prefix .runtime/release-cpu --tools-prefix .runtime/tools
+      - name: Package CPU runtime
+        run: |
+          python3 scripts/package_runtime.py \
+            --prefix .runtime/release-cpu \
+            --output-dir dist-runtime \
+            --backend cpu \
+            --revision "$RUNTIME_REVISION" \
+            --features asr
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runtime-cpu
+          path: dist-runtime/*
+
+  cuda:
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          apt-get install -y build-essential ninja-build git curl ca-certificates python3
+      - name: Install pinned CMake
+        run: scripts/bootstrap_build_tools.sh --prefix .runtime/tools
+      - name: Build CUDA runtime with translation
+        run: |
+          export PATH="$PWD/.runtime/tools/bin:$PATH"
+          scripts/bootstrap_runtime.sh \
+            --backend cuda \
+            --prefix .runtime/release-cuda \
+            --tools-prefix .runtime/tools \
+            --with-nmt \
+            --skip-gpu-check
+      - name: Package CUDA runtime
+        run: |
+          python3 scripts/package_runtime.py \
+            --prefix .runtime/release-cuda \
+            --output-dir dist-runtime \
+            --backend cuda \
+            --revision "$RUNTIME_REVISION" \
+            --features asr,translation
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runtime-cuda
+          path: dist-runtime/*
+
+  release:
+    needs: [cpu, cuda, verify]
+    runs-on: ubuntu-22.04
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: runtime-*
+          path: dist-runtime
+          merge-multiple: true
+      - name: Create pinned registry candidate
+        run: |
+          cp src/speechloom/data/registry.json dist-runtime/registry.json
+          python3 scripts/update_runtime_registry.py \
+            --registry dist-runtime/registry.json \
+            --release-dir dist-runtime \
+            --release-tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: runtime-release-candidate
+          path: dist-runtime/*
+      - name: Publish GitHub release assets
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --title "Speechloom runtime $RELEASE_TAG" --notes "Pinned NeMo-Speech.cpp runtime archives."
+          gh release upload "$RELEASE_TAG" dist-runtime/*.tar.gz dist-runtime/*.sha256 --clobber
+      - name: Open registry promotion pull request
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp dist-runtime/registry.json src/speechloom/data/registry.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="runtime-registry-$RELEASE_TAG"
+          git checkout -b "$branch"
+          git add src/speechloom/data/registry.json
+          git commit -m "build: register $RELEASE_TAG runtime archives"
+          git push origin "$branch"
+          gh pr create \
+            --base "$GITHUB_REF_NAME" \
+            --head "$branch" \
+            --title "Register $RELEASE_TAG runtime archives" \
+            --body "Pins the verified CPU and CUDA archive URLs and checksums produced by the runtime release workflow."
+
+  verify:
+    needs: [cpu, cuda]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: runtime-*
+          path: dist-runtime
+          merge-multiple: true
+      - name: Verify archives without a compiler or CUDA toolkit
+        run: python3 scripts/verify_runtime_archive.py dist-runtime/*.tar.gz

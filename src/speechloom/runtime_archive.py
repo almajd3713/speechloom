@@ -68,6 +68,9 @@ def build_runtime_archive(
     executable = prefix / metadata.executable
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise SetupError(f"Runtime executable is missing or not executable: {executable}")
+    licenses = prefix / "share/licenses"
+    if not licenses.is_dir() or not any(path.is_file() for path in licenses.rglob("*")):
+        raise SetupError("Runtime prefix does not contain third-party license files")
     output.parent.mkdir(parents=True, exist_ok=True)
     root_name = output.name.removesuffix(".tar.gz")
 
