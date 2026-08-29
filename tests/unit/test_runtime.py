@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
 from speechloom.errors import ConfigurationError
-from speechloom.registry import Registry
+from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import (
     AppPaths,
     InstallState,
@@ -104,6 +105,41 @@ class RegistryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ConfigurationError, "revision"):
             Registry.from_dict(payload)
+
+    def test_selects_only_compatible_runtime_archive_features(self) -> None:
+        registry = Registry.load()
+        cpu = RuntimeArchiveSpec(
+            backend="cpu",
+            system="linux",
+            architecture="x86_64",
+            filename="cpu.tar.gz",
+            url="https://example.invalid/cpu.tar.gz",
+            sha256="a" * 64,
+            features=("asr",),
+            minimum_free_bytes=0,
+        )
+        cuda = RuntimeArchiveSpec(
+            backend="cuda",
+            system="linux",
+            architecture="x86_64",
+            filename="cuda.tar.gz",
+            url="https://example.invalid/cuda.tar.gz",
+            sha256="b" * 64,
+            features=("asr", "translation"),
+            minimum_free_bytes=0,
+        )
+        registry = replace(
+            registry,
+            runtime=replace(registry.runtime, archives=(cpu, cuda)),
+        )
+
+        self.assertEqual(
+            registry.runtime_archive("cuda", "linux", "x86_64", ("translation",)),
+            cuda,
+        )
+        self.assertIsNone(
+            registry.runtime_archive("cpu", "linux", "x86_64", ("translation",))
+        )
 
 
 if __name__ == "__main__":

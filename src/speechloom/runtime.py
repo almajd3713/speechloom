@@ -79,6 +79,8 @@ class InstalledArtifact:
     size: int | None = None
     source: str = "managed"
     license: str | None = None
+    download_url: str | None = None
+    download_sha256: str | None = None
 
 
 @dataclass(frozen=True)

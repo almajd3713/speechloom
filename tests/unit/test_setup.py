@@ -13,15 +13,22 @@ from speechloom.doctor import DoctorReport
 from speechloom.errors import CancellationError
 from speechloom.process import CommandResult
 from speechloom.process import run_command
-from speechloom.registry import Registry
+from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import AppPaths, load_install_state
+from speechloom.runtime_archive import RuntimeArchiveMetadata, build_runtime_archive
 from speechloom.setup import SetupManager, SetupRequest
 
 
 class FakeInstaller:
-    def __init__(self, asr_content: bytes, diar_content: bytes = b"diar") -> None:
+    def __init__(
+        self,
+        asr_content: bytes,
+        diar_content: bytes = b"diar",
+        artifacts: dict[str, bytes] | None = None,
+    ) -> None:
         self.asr_content = asr_content
         self.diar_content = diar_content
+        self.artifacts = artifacts or {}
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, argv, **kwargs) -> CommandResult:
@@ -42,7 +49,9 @@ class FakeInstaller:
             destination = Path(command[command.index("--destination") + 1])
             filename = command[command.index("--filename") + 1]
             destination.mkdir(parents=True, exist_ok=True)
-            content = self.asr_content if filename == "parakeet.gguf" else self.diar_content
+            content = self.artifacts.get(filename)
+            if content is None:
+                content = self.asr_content if filename == "parakeet.gguf" else self.diar_content
             (destination / filename).write_bytes(content)
         return CommandResult(command, 0, "", "")
 
@@ -120,6 +129,73 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual(second.actions, ())
             self.assertTrue(manager.status().ready)
             self.assertIsNotNone(load_install_state(manager.paths.state_file))
+
+    def test_setup_prefers_a_verified_compatible_runtime_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            registry = _registry(b"asr")
+            prefix = root / "archive-prefix"
+            executable = prefix / registry.runtime.executable
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b"prebuilt-runtime")
+            executable.chmod(0o755)
+            filename = "speechloom-runtime-fixture-cpu-linux-x86_64.tar.gz"
+            archive_path = root / filename
+            archive_sha = build_runtime_archive(
+                prefix,
+                archive_path,
+                RuntimeArchiveMetadata(
+                    backend="cpu",
+                    system="linux",
+                    architecture="x86_64",
+                    revision=registry.runtime.revision,
+                    features=("asr",),
+                    executable=registry.runtime.executable,
+                ),
+            )
+            archive = RuntimeArchiveSpec(
+                backend="cpu",
+                system="linux",
+                architecture="x86_64",
+                filename=filename,
+                url=f"https://example.invalid/{filename}",
+                sha256=archive_sha,
+                features=("asr",),
+                minimum_free_bytes=0,
+            )
+            registry = replace(
+                registry,
+                runtime=replace(registry.runtime, archives=(archive,)),
+            )
+            installer = FakeInstaller(
+                b"asr",
+                artifacts={filename: archive_path.read_bytes()},
+            )
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=registry,
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            first = manager.setup(SetupRequest(backend="cpu"))
+            second = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertIn("installed cpu prebuilt runtime", first.actions)
+            self.assertEqual(second.actions, ())
+            self.assertEqual(first.state.runtime.source, "prebuilt")
+            self.assertEqual(first.state.runtime.download_url, archive.url)
+            self.assertEqual(first.state.runtime.download_sha256, archive.sha256)
+            self.assertTrue(Path(first.state.runtime.path).is_file())
+            self.assertFalse(
+                any("bootstrap_runtime.sh" in part for call in installer.calls for part in call)
+            )
+            self.assertFalse((manager.paths.downloads_dir / filename).exists())
 
     def test_setup_emits_structured_stage_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

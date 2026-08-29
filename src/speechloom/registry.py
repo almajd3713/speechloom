@@ -15,6 +15,18 @@ REGISTRY_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
+class RuntimeArchiveSpec:
+    backend: str
+    system: str
+    architecture: str
+    filename: str
+    url: str
+    sha256: str
+    features: tuple[str, ...]
+    minimum_free_bytes: int
+
+
+@dataclass(frozen=True)
 class RuntimeSpec:
     id: str
     repository: str
@@ -24,6 +36,7 @@ class RuntimeSpec:
     license: str
     backends: tuple[str, ...]
     features: tuple[str, ...]
+    archives: tuple[RuntimeArchiveSpec, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -69,12 +82,21 @@ class Registry:
                 license=str(runtime_data["license"]),
                 backends=tuple(str(item) for item in runtime_data["backends"]),
                 features=tuple(str(item) for item in runtime_data["features"]),
+                archives=tuple(
+                    _runtime_archive_spec(item) for item in runtime_data.get("archives", [])
+                ),
             )
             models = tuple(_model_spec(item) for item in payload["models"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigurationError("Speechloom's bundled artifact registry is incomplete") from exc
         if len({model.id for model in models}) != len(models):
             raise ConfigurationError("Speechloom's artifact registry contains duplicate model IDs")
+        archive_keys = {
+            (archive.backend, archive.system, archive.architecture, archive.features)
+            for archive in runtime.archives
+        }
+        if len(archive_keys) != len(runtime.archives):
+            raise ConfigurationError("Speechloom's artifact registry contains duplicate runtimes")
         return cls(runtime, models)
 
     def model(self, kind: str) -> ModelSpec:
@@ -82,6 +104,45 @@ class Registry:
         if len(matches) != 1:
             raise ConfigurationError(f"Artifact registry does not define one {kind!r} model")
         return matches[0]
+
+    def runtime_archive(
+        self,
+        backend: str,
+        system: str,
+        architecture: str,
+        features: tuple[str, ...],
+    ) -> RuntimeArchiveSpec | None:
+        requested = {"asr", *features}
+        matches = [
+            archive
+            for archive in self.runtime.archives
+            if archive.backend == backend
+            and archive.system == system.lower()
+            and archive.architecture == architecture.lower()
+            and requested.issubset(archive.features)
+        ]
+        if len(matches) > 1:
+            raise ConfigurationError("Artifact registry defines ambiguous runtime profiles")
+        return matches[0] if matches else None
+
+
+def _runtime_archive_spec(payload: dict[str, Any]) -> RuntimeArchiveSpec:
+    digest = str(payload["sha256"])
+    filename = str(payload["filename"])
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ConfigurationError("Invalid runtime archive checksum")
+    if filename in {"", ".", ".."} or "/" in filename or "\\" in filename:
+        raise ConfigurationError("Runtime archive filename must be a safe path component")
+    return RuntimeArchiveSpec(
+        backend=str(payload["backend"]),
+        system=str(payload["system"]).lower(),
+        architecture=str(payload["architecture"]).lower(),
+        filename=filename,
+        url=_https_url(payload["url"], "runtime archive URL"),
+        sha256=digest,
+        features=tuple(str(item) for item in payload["features"]),
+        minimum_free_bytes=int(payload["minimum_free_bytes"]),
+    )
 
 
 def _model_spec(payload: dict[str, Any]) -> ModelSpec:

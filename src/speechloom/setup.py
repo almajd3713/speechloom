@@ -20,13 +20,18 @@ from .contracts import CancellationToken, StageEvent
 from .doctor import DoctorReport, run_doctor
 from .errors import CancellationError, ConfigurationError, PipelineError, SetupError
 from .process import CommandResult, run_command
-from .registry import ModelSpec, Registry
+from .registry import ModelSpec, Registry, RuntimeArchiveSpec
 from .runtime import (
     AppPaths,
     InstallState,
     InstalledArtifact,
     load_install_state,
     save_install_state,
+)
+from .runtime_archive import (
+    RuntimeArchiveMetadata,
+    extract_runtime_archive,
+    read_runtime_metadata,
 )
 
 
@@ -212,6 +217,12 @@ class SetupManager:
             runtime = self._legacy_runtime(backend, request.features)
             if runtime is not None:
                 actions.append("imported legacy runtime")
+        if runtime is None and not request.from_source:
+            archive = self._runtime_archive(backend, request.features)
+            if archive is not None:
+                _emit(on_stage, f"installing {backend} runtime archive")
+                runtime = self._install_runtime_archive(archive)
+                actions.append(f"installed {backend} prebuilt runtime")
         if runtime is None:
             _emit(on_stage, f"building {backend} runtime")
             runtime = self._build_runtime(backend, request.features)
@@ -464,6 +475,86 @@ class SetupManager:
             license=self.registry.runtime.license,
         )
 
+    def _runtime_archive(
+        self, backend: str, features: Sequence[str]
+    ) -> RuntimeArchiveSpec | None:
+        machine = platform.machine().lower()
+        if machine == "amd64":
+            machine = "x86_64"
+        return self.registry.runtime_archive(
+            backend,
+            platform.system().lower(),
+            machine,
+            tuple(features),
+        )
+
+    def _install_runtime_archive(self, spec: RuntimeArchiveSpec) -> InstalledArtifact:
+        free = shutil.disk_usage(self.paths.runtime_dir).free
+        if free < spec.minimum_free_bytes:
+            raise SetupError(
+                "Not enough free space for runtime installation: "
+                f"need {spec.minimum_free_bytes} bytes, have {free}"
+            )
+        self._run_command(
+            [
+                "bash",
+                str(self._script_path("download_artifact.sh")),
+                "--destination",
+                str(self.paths.downloads_dir),
+                "--download-cache",
+                str(self.paths.downloads_dir),
+                "--url",
+                spec.url,
+                "--filename",
+                spec.filename,
+                "--sha256",
+                spec.sha256,
+            ]
+        )
+        archive_path = self.paths.downloads_dir / spec.filename
+        if not archive_path.is_file() or sha256_file(archive_path) != spec.sha256:
+            raise SetupError("Downloaded runtime archive checksum does not match the registry")
+        expected = RuntimeArchiveMetadata(
+            backend=spec.backend,
+            system=spec.system,
+            architecture=spec.architecture,
+            revision=self.registry.runtime.revision,
+            features=spec.features,
+            executable=self.registry.runtime.executable,
+        )
+        destination = self.paths.runtime_dir / (
+            f"nemo-speech-{spec.backend}-{spec.sha256[:12]}"
+        )
+        executable = destination / self.registry.runtime.executable
+        if destination.exists():
+            metadata_path = destination / "runtime.json"
+            try:
+                installed_metadata = RuntimeArchiveMetadata.from_dict(
+                    json.loads(metadata_path.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError, SetupError) as exc:
+                raise SetupError(
+                    f"Existing managed runtime is invalid and was not overwritten: {destination}"
+                ) from exc
+            if installed_metadata != expected or not executable.is_file():
+                raise SetupError(
+                    f"Existing managed runtime does not match its profile: {destination}"
+                )
+        else:
+            if read_runtime_metadata(archive_path) != expected:
+                raise SetupError("Runtime archive metadata does not match the registry")
+            executable = extract_runtime_archive(archive_path, destination, expected)
+        return self._record(
+            self.registry.runtime.id,
+            "runtime",
+            executable,
+            revision=self.registry.runtime.revision,
+            source="prebuilt",
+            license=self.registry.runtime.license,
+            download_url=spec.url,
+            download_sha256=spec.sha256,
+        )
+
     def _ensure_build_tools(self) -> None:
         try:
             result = self._run_command(["cmake", "--version"], check=False)
@@ -624,6 +715,8 @@ class SetupManager:
         revision: str | None = None,
         source: str = "managed",
         license: str | None = None,
+        download_url: str | None = None,
+        download_sha256: str | None = None,
     ) -> InstalledArtifact:
         return InstalledArtifact(
             id=artifact_id,
@@ -634,6 +727,8 @@ class SetupManager:
             size=path.stat().st_size,
             source=source,
             license=license,
+            download_url=download_url,
+            download_sha256=download_sha256,
         )
 
     def _valid_artifact(self, artifact: InstalledArtifact) -> bool:
@@ -672,6 +767,10 @@ class SetupManager:
         for path in (self.paths.cache_dir / "converter", self.paths.cache_dir / "huggingface"):
             if path.exists():
                 shutil.rmtree(path)
+        if self.paths.downloads_dir.exists():
+            for path in self.paths.downloads_dir.iterdir():
+                if path.is_file() and not path.name.endswith(".part"):
+                    path.unlink()
 
     def _retained_cache(self) -> tuple[str, ...]:
         return tuple(
