@@ -13,7 +13,7 @@ converter_env="${project_root}/.runtime/nmt-converter"
 cache_dir="${project_root}/.runtime/cache/huggingface"
 
 usage() {
-    echo "Usage: $0 [--destination DIRECTORY]"
+    echo "Usage: $0 [--destination DIRECTORY] [--converter-env DIRECTORY] [--cache-dir DIRECTORY]"
     echo "Downloads the pinned 4B checkpoint and converts it locally to Q8_0 GGUF."
 }
 
@@ -22,6 +22,16 @@ while [[ $# -gt 0 ]]; do
         --destination)
             [[ $# -ge 2 ]] || { echo "--destination requires a value" >&2; exit 2; }
             destination_dir="$2"
+            shift 2
+            ;;
+        --converter-env)
+            [[ $# -ge 2 ]] || { echo "--converter-env requires a value" >&2; exit 2; }
+            converter_env="$2"
+            shift 2
+            ;;
+        --cache-dir)
+            [[ $# -ge 2 ]] || { echo "--cache-dir requires a value" >&2; exit 2; }
+            cache_dir="$2"
             shift 2
             ;;
         -h|--help)

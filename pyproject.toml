@@ -20,3 +20,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 speechloom = ["data/*.json"]
+
+[tool.setuptools.data-files]
+"share/speechloom/scripts" = ["scripts/*.sh"]

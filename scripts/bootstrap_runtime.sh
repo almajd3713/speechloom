@@ -8,12 +8,10 @@ backend="cpu"
 with_nmt="OFF"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_prefix="${project_root}/.runtime/nemo-speech"
-if [[ -x "${project_root}/.runtime/tools/bin/cmake" ]]; then
-    export PATH="${project_root}/.runtime/tools/bin:${PATH}"
-fi
+tools_prefix="${project_root}/.runtime/tools"
 
 usage() {
-    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--with-nmt]"
+    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--tools-prefix DIRECTORY] [--with-nmt]"
     echo "Relative prefixes are resolved from the repository root."
 }
 
@@ -27,6 +25,11 @@ while [[ $# -gt 0 ]]; do
         --prefix)
             [[ $# -ge 2 ]] || { echo "--prefix requires a value" >&2; exit 2; }
             install_prefix="$2"
+            shift 2
+            ;;
+        --tools-prefix)
+            [[ $# -ge 2 ]] || { echo "--tools-prefix requires a value" >&2; exit 2; }
+            tools_prefix="$2"
             shift 2
             ;;
         --with-nmt)
@@ -44,6 +47,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -x "${tools_prefix}/bin/cmake" ]]; then
+    export PATH="${tools_prefix}/bin:${PATH}"
+fi
 
 if [[ "$install_prefix" != /* ]]; then
     install_prefix="${project_root}/${install_prefix#./}"

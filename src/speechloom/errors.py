@@ -13,6 +13,10 @@ class ConfigurationError(PipelineError):
     exit_code = 2
 
 
+class SetupError(PipelineError):
+    """A managed runtime or model could not be installed or verified."""
+
+
 class MissingDependencyError(PipelineError):
     exit_code = 3
 
@@ -37,4 +41,3 @@ class InferenceError(PipelineError):
 
 class ArtifactConflictError(PipelineError):
     exit_code = 2
-
