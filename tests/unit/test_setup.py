@@ -8,7 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from speechloom import CancellationController, StageEvent
 from speechloom.doctor import DoctorReport
+from speechloom.errors import CancellationError
 from speechloom.process import CommandResult
 from speechloom.process import run_command
 from speechloom.registry import Registry
@@ -118,6 +120,69 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual(second.actions, ())
             self.assertTrue(manager.status().ready)
             self.assertIsNotNone(load_install_state(manager.paths.state_file))
+
+    def test_setup_emits_structured_stage_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            events: list[StageEvent] = []
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr"),
+                runner=FakeInstaller(b"asr"),
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            manager.setup(SetupRequest(backend="cpu"), on_event=events.append)
+
+            self.assertEqual(
+                list(dict.fromkeys(event.stage for event in events)),
+                [
+                    "validating",
+                    "installing_runtime",
+                    "installing_models",
+                    "configuring",
+                    "completed",
+                ],
+            )
+            self.assertTrue(all(event.timestamp for event in events))
+
+    def test_setup_cancellation_stops_before_the_next_stage_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            installer = FakeInstaller(b"asr")
+            controller = CancellationController()
+            events: list[StageEvent] = []
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr"),
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            def cancel_runtime(event: StageEvent) -> None:
+                events.append(event)
+                if event.stage == "installing_runtime":
+                    controller.cancel()
+
+            with self.assertRaises(CancellationError):
+                manager.setup(
+                    SetupRequest(backend="cpu"),
+                    on_event=cancel_runtime,
+                    cancellation=controller,
+                )
+
+            self.assertEqual(events[-1].stage, "cancelled")
+            self.assertFalse(any(call[0] == "bash" for call in installer.calls))
 
     def test_imports_repository_runtime_without_moving_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

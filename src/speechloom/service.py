@@ -42,9 +42,6 @@ class TranscriptionService:
         on_event: EventSink | None = None,
         cancellation: CancellationToken | None = None,
     ) -> list[JobResult]:
-        # Stage-level events and process cancellation are connected in M3. Checking at
-        # the application boundary already makes cancellation safe before work starts.
-        del on_event
         if cancellation is not None:
             cancellation.raise_if_cancelled()
         if not self._settings.model:
@@ -63,8 +60,15 @@ class TranscriptionService:
             )
 
         sources = discover_inputs(list(request.inputs), recursive=request.recursive)
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
         options = self._pipeline_options(request)
-        return Pipeline(options, runner=self._runner).run(sources)
+        return Pipeline(
+            options,
+            runner=self._runner,
+            on_event=on_event,
+            cancellation=cancellation,
+        ).run(sources)
 
     def inspect(self, job: Path | str) -> JobDetails:
         return JobDetails.from_manifest(inspect_job(Path(job)))

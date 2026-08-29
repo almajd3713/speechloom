@@ -12,12 +12,20 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import threading
 import time
 from typing import Any, Callable
 
 from . import __version__
 from .artifacts import atomic_write_json, atomic_write_text, file_identity, read_json, sha256_file
-from .errors import ArtifactConflictError, ConfigurationError, InferenceError, PipelineError
+from .contracts import CancellationToken, StageEvent
+from .errors import (
+    ArtifactConflictError,
+    CancellationError,
+    ConfigurationError,
+    InferenceError,
+    PipelineError,
+)
 from .media import can_passthrough_wav, normalize_audio, probe_media, select_audio_stream
 from .nemo import (
     NemoOptions,
@@ -96,7 +104,14 @@ class PreparedJob:
 
 
 class Pipeline:
-    def __init__(self, options: PipelineOptions, *, runner: Callable[..., CommandResult] = run_command) -> None:
+    def __init__(
+        self,
+        options: PipelineOptions,
+        *,
+        runner: Callable[..., CommandResult] = run_command,
+        on_event: Callable[[StageEvent], None] | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> None:
         if options.workers < 1:
             raise ConfigurationError("workers must be at least 1")
         translation_values = (
@@ -111,15 +126,66 @@ class Pipeline:
         if options.source_language and options.source_language == options.translate_to:
             raise ConfigurationError("source_language and translate_to must be different")
         self.options = options
-        self.runner = runner
+        self._runner = runner
+        self._on_event = on_event
+        self._cancellation = cancellation
+        self._event_lock = threading.RLock()
+        self.runner = self._run_command
         self._identity_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
         self._tool_versions: dict[str, str] | None = None
 
     def run(self, sources: list[Path]) -> list[JobResult]:
         sources = [source.expanduser().resolve() for source in sources]
+        for completed, source in enumerate(sources, start=1):
+            self._emit(
+                "queued",
+                "queued",
+                "Input queued",
+                source=source,
+                completed=completed,
+                total=len(sources),
+            )
+        try:
+            self._check_cancelled()
+        except CancellationError as exc:
+            return [self._cancelled_result(source, exc, None) for source in sources]
         if len(sources) > 1 and self.options.shared_model:
             return self._run_shared_batch(sources)
         return self._run_isolated(sources)
+
+    def _run_command(self, argv, **kwargs) -> CommandResult:
+        if self._cancellation is not None:
+            kwargs.setdefault("cancellation", self._cancellation)
+        return self._runner(argv, **kwargs)
+
+    def _check_cancelled(self) -> None:
+        if self._cancellation is not None:
+            self._cancellation.raise_if_cancelled()
+
+    def _emit(
+        self,
+        stage: str,
+        status: str,
+        message: str,
+        *,
+        prepared: PreparedJob | None = None,
+        source: Path | None = None,
+        completed: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        if self._on_event is None:
+            return
+        event = StageEvent(
+            job_id=prepared.job_id if prepared is not None else None,
+            source=prepared.source if prepared is not None else source,
+            stage=stage,
+            status=status,
+            message=message,
+            completed=completed,
+            total=total,
+        )
+        with self._event_lock:
+            self._on_event(event)
 
     def run_one(self, source: Path) -> JobResult:
         prepared: PreparedJob | None = None
@@ -129,6 +195,13 @@ class Pipeline:
                 return prepared_or_result
             prepared = prepared_or_result
             if prepared.transcript is None:
+                self._check_cancelled()
+                self._emit(
+                    "transcribing",
+                    "started",
+                    "Transcription started",
+                    prepared=prepared,
+                )
                 step_started = time.monotonic()
                 prepared.transcript = transcribe(
                     prepared.audio_path,
@@ -140,8 +213,16 @@ class Pipeline:
                     time.monotonic() - step_started
                 )
             self._commit_transcript(prepared)
+            self._emit(
+                "transcribing",
+                "completed",
+                "Canonical transcript committed",
+                prepared=prepared,
+            )
             self._translate_jobs([prepared])
             return self._complete(prepared)
+        except CancellationError as exc:
+            return self._cancelled_result(source, exc, prepared)
         except KeyboardInterrupt:
             if prepared is not None:
                 self._mark_interrupted(prepared)
@@ -155,6 +236,16 @@ class Pipeline:
             for source in sources:
                 result = self.run_one(source)
                 results.append(result)
+                if result.state == "cancelled":
+                    for unstarted in sources[len(results) :]:
+                        results.append(
+                            self._cancelled_result(
+                                unstarted,
+                                CancellationError("Operation cancelled"),
+                                None,
+                            )
+                        )
+                    break
                 if result.error and self.options.fail_fast:
                     break
             return results
@@ -178,14 +269,21 @@ class Pipeline:
     def _run_shared_batch(self, sources: list[Path]) -> list[JobResult]:
         results_by_source, pending, halted = self._prepare_batch(sources)
         if halted:
-            for prepared in pending:
-                self._mark_interrupted(prepared)
+            if self._cancellation is not None and self._cancellation.is_cancelled():
+                results_by_source.update(
+                    self._cancel_prepared(pending, CancellationError("Operation cancelled"))
+                )
+            else:
+                for prepared in pending:
+                    self._mark_interrupted(prepared)
             return _ordered_results(sources, results_by_source)
         if not pending:
             return _ordered_results(sources, results_by_source)
 
         try:
             results_by_source.update(self._transcribe_shared(pending))
+        except CancellationError as exc:
+            results_by_source.update(self._cancel_prepared(pending, exc))
         except KeyboardInterrupt:
             for prepared in pending:
                 self._mark_interrupted(prepared)
@@ -201,6 +299,7 @@ class Pipeline:
         pending: list[PreparedJob] = []
         for source in sources:
             try:
+                self._check_cancelled()
                 prepared_or_result = self._prepare(source)
                 if isinstance(prepared_or_result, JobResult):
                     result = prepared_or_result
@@ -211,14 +310,26 @@ class Pipeline:
                 else:
                     pending.append(prepared_or_result)
                     continue
+            except CancellationError as exc:
+                result = self._cancelled_result(source, exc, None)
             except Exception as exc:
                 result = self._failed_result(source, exc, None)
             results[str(source)] = result
+            if result.state == "cancelled":
+                return results, pending, True
             if result.error and self.options.fail_fast:
                 return results, pending, True
         return results, pending, False
 
     def _transcribe_shared(self, pending: list[PreparedJob]) -> dict[str, JobResult]:
+        self._check_cancelled()
+        for prepared in pending:
+            self._emit(
+                "transcribing",
+                "started",
+                "Shared-model transcription started",
+                prepared=prepared,
+            )
         output_root = self.options.output_dir.expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix=".parakeet-batch-", dir=output_root) as temporary:
@@ -262,6 +373,7 @@ class Pipeline:
         native_error = map_native_failure(command_result) if command_result.returncode else None
         completed_asr: list[PreparedJob] = []
         for prepared, native_stem in staged:
+            self._check_cancelled()
             result_path = output_dir / f"{native_stem}.json"
             if not result_path.is_file():
                 error = native_error or InferenceError(
@@ -276,17 +388,32 @@ class Pipeline:
                 timings["batch_inference_seconds"] = elapsed
                 timings["batch_size"] = len(staged)
                 self._commit_transcript(prepared)
+                self._emit(
+                    "transcribing",
+                    "completed",
+                    "Canonical transcript committed",
+                    prepared=prepared,
+                )
                 completed_asr.append(prepared)
+            except CancellationError:
+                raise
             except Exception as exc:
                 results[str(prepared.source)] = self._failed_result(prepared.source, exc, prepared)
         try:
             self._translate_jobs(completed_asr)
+        except CancellationError as exc:
+            results.update(self._cancel_prepared(completed_asr, exc))
+            return results
         except Exception as exc:
             results.update(self._fail_prepared(completed_asr, exc))
             return results
         for prepared in completed_asr:
             try:
                 results[str(prepared.source)] = self._complete(prepared)
+            except CancellationError as exc:
+                results[str(prepared.source)] = self._cancelled_result(
+                    prepared.source, exc, prepared
+                )
             except Exception as exc:
                 results[str(prepared.source)] = self._failed_result(prepared.source, exc, prepared)
         return results
@@ -299,8 +426,18 @@ class Pipeline:
             for prepared in pending
         }
 
+    def _cancel_prepared(
+        self, pending: list[PreparedJob], exc: CancellationError
+    ) -> dict[str, JobResult]:
+        return {
+            str(prepared.source): self._cancelled_result(prepared.source, exc, prepared)
+            for prepared in pending
+        }
+
     def _prepare(self, source: Path) -> PreparedJob | JobResult:
         source = source.expanduser().resolve()
+        self._check_cancelled()
+        self._emit("validating", "started", "Validating input and models", source=source)
         started = time.monotonic()
         source_identity = self._identity(source)
         model_identity = self._identity(self.options.model)
@@ -329,6 +466,12 @@ class Pipeline:
                 )
             )
             if source_ready and translation_ready:
+                self._emit(
+                    "completed",
+                    "skipped",
+                    "Requested artifacts are already complete",
+                    source=source,
+                )
                 return JobResult(str(source), str(job_dir), "completed", skipped=True)
             translation_path = _translation_path(job_dir, self.options.translate_to or "")
             if self._translation_requested() and translation_path.exists() and not translation_matches:
@@ -372,21 +515,42 @@ class Pipeline:
             passthrough=True,
             started=started,
         )
+        self._emit(
+            "validating",
+            "completed",
+            "Input and model identities validated",
+            prepared=prepared,
+        )
 
         if not self.options.force and existing and canonical_path.is_file():
             prepared.transcript = Transcript.load(canonical_path)
             prepared.duration = prepared.transcript.duration
+            self._emit(
+                "transcribing",
+                "completed",
+                "Loaded committed canonical transcript",
+                prepared=prepared,
+            )
             translation_path = _translation_path(job_dir, self.options.translate_to or "")
             if self._translation_matches(existing, translation_identity) and translation_path.is_file():
                 prepared.translation = Translation.load(translation_path)
+                self._emit(
+                    "translating",
+                    "completed",
+                    "Loaded committed translation",
+                    prepared=prepared,
+                )
             return prepared
 
         try:
+            self._check_cancelled()
+            self._emit("probing", "started", "Probing media streams", prepared=prepared)
             media = probe_media(source, self.options.ffprobe, runner=self.runner)
             stream = select_audio_stream(media, self.options.audio_stream)
             manifest["media"] = media.to_dict()
             manifest["selected_audio_stream"] = asdict(stream)
             atomic_write_json(manifest_path, manifest)
+            self._emit("probing", "completed", "Audio stream selected", prepared=prepared)
 
             normalized_path = work_dir / "audio.wav"
             passthrough = can_passthrough_wav(source, stream)
@@ -397,6 +561,13 @@ class Pipeline:
                 and normalized_path.is_file()
             )
             if not passthrough and not can_resume_audio:
+                self._check_cancelled()
+                self._emit(
+                    "normalizing",
+                    "started",
+                    "Normalizing media audio",
+                    prepared=prepared,
+                )
                 step_started = time.monotonic()
                 normalize_audio(source, normalized_path, stream, self.options.ffmpeg, runner=self.runner)
                 manifest.setdefault("timings", {})["normalization_seconds"] = (
@@ -408,7 +579,20 @@ class Pipeline:
             prepared.audio_path = audio_path
             prepared.duration = media.duration
             prepared.passthrough = passthrough
+            normalization_message = (
+                "Audio already matches the canonical format"
+                if passthrough
+                else "Normalized audio is ready"
+            )
+            self._emit(
+                "normalizing",
+                "completed",
+                normalization_message,
+                prepared=prepared,
+            )
             return prepared
+        except CancellationError as exc:
+            return self._cancelled_result(source, exc, prepared)
         except KeyboardInterrupt:
             self._mark_interrupted(prepared)
             raise
@@ -416,13 +600,16 @@ class Pipeline:
             return self._failed_result(source, exc, prepared)
 
     def _complete(self, prepared: PreparedJob) -> JobResult:
+        self._check_cancelled()
         if prepared.transcript is None:
             raise InferenceError("Cannot complete a job without a transcript")
         self._commit_transcript(prepared)
         if self._translation_requested() and prepared.translation is None:
             raise InferenceError("Cannot complete a translated job without translated segments")
 
+        self._emit("rendering", "started", "Rendering requested artifacts", prepared=prepared)
         self._render(prepared.job_dir, prepared.transcript)
+        self._check_cancelled()
         if prepared.translation is not None:
             self._render_translation(prepared.job_dir, prepared.translation)
             prepared.manifest["translation"] = {
@@ -440,6 +627,8 @@ class Pipeline:
         prepared.manifest.setdefault("timings", {})["total_seconds"] = time.monotonic() - prepared.started
         atomic_write_json(prepared.manifest_path, prepared.manifest)
         self._cleanup_audio(prepared)
+        self._emit("rendering", "completed", "Requested artifacts rendered", prepared=prepared)
+        self._emit("completed", "completed", "Job completed", prepared=prepared)
         return JobResult(str(prepared.source), str(prepared.job_dir), "completed")
 
     def _commit_transcript(self, prepared: PreparedJob) -> None:
@@ -465,6 +654,14 @@ class Pipeline:
         pending = [prepared for prepared in prepared_jobs if prepared.translation is None]
         if not pending:
             return
+        self._check_cancelled()
+        for prepared in pending:
+            self._emit(
+                "translating",
+                "started",
+                "Translation started",
+                prepared=prepared,
+            )
         source_texts: list[str] = []
         ranges: list[tuple[PreparedJob, int, int]] = []
         for prepared in pending:
@@ -487,6 +684,7 @@ class Pipeline:
         )
         elapsed = time.monotonic() - step_started
         for prepared, start, end in ranges:
+            self._check_cancelled()
             assert prepared.transcript is not None
             source_segments = prepared.transcript.segments
             translated_segments = [
@@ -519,16 +717,25 @@ class Pipeline:
                 prepared.translation.to_dict(),
             )
             atomic_write_json(prepared.manifest_path, prepared.manifest)
+            self._emit(
+                "translating",
+                "completed",
+                "Translation committed",
+                prepared=prepared,
+            )
 
     def _render(self, job_dir: Path, transcript: Transcript) -> None:
         atomic_write_json(job_dir / "transcript.json", transcript.to_dict())
         formats = set(self.options.formats)
         if "txt" in formats:
+            self._check_cancelled()
             atomic_write_text(job_dir / "transcript.txt", render_text(transcript))
         segments = transcript.segments or build_segments(transcript)
         if "srt" in formats:
+            self._check_cancelled()
             atomic_write_text(job_dir / "subtitles.srt", render_srt(segments))
         if "vtt" in formats:
+            self._check_cancelled()
             atomic_write_text(job_dir / "subtitles.vtt", render_vtt(segments))
 
     def _render_translation(self, job_dir: Path, translation: Translation) -> None:
@@ -536,11 +743,14 @@ class Pipeline:
         atomic_write_json(_translation_path(job_dir, target), translation.to_dict())
         formats = set(self.options.formats)
         if "txt" in formats:
+            self._check_cancelled()
             atomic_write_text(job_dir / f"translation.{target}.txt", render_translation_text(translation))
         segments = [segment.as_subtitle_segment() for segment in translation.segments]
         if "srt" in formats:
+            self._check_cancelled()
             atomic_write_text(job_dir / f"subtitles.{target}.srt", render_srt(segments))
         if "vtt" in formats:
+            self._check_cancelled()
             atomic_write_text(job_dir / f"subtitles.{target}.vtt", render_vtt(segments))
 
     def _cleanup_audio(self, prepared: PreparedJob) -> None:
@@ -555,6 +765,38 @@ class Pipeline:
         prepared.manifest["state"] = "interrupted"
         prepared.manifest["updated_at"] = _now()
         atomic_write_json(prepared.manifest_path, prepared.manifest)
+        self._emit("interrupted", "interrupted", "Job interrupted", prepared=prepared)
+
+    def _cancelled_result(
+        self,
+        source: Path,
+        exc: CancellationError,
+        prepared: PreparedJob | None,
+    ) -> JobResult:
+        if prepared is not None:
+            prepared.manifest["state"] = "cancelled"
+            prepared.manifest["updated_at"] = _now()
+            prepared.manifest["error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
+            prepared.manifest.setdefault("timings", {})["total_seconds"] = (
+                time.monotonic() - prepared.started
+            )
+            atomic_write_json(prepared.manifest_path, prepared.manifest)
+        self._emit(
+            "cancelled",
+            "cancelled",
+            str(exc),
+            prepared=prepared,
+            source=source,
+        )
+        return JobResult(
+            str(source),
+            str(prepared.job_dir) if prepared else "",
+            "cancelled",
+            error=str(exc),
+        )
 
     def _failed_result(
         self,
@@ -570,6 +812,13 @@ class Pipeline:
                 time.monotonic() - prepared.started
             )
             atomic_write_json(prepared.manifest_path, prepared.manifest)
+        self._emit(
+            "failed",
+            "failed",
+            str(exc),
+            prepared=prepared,
+            source=source,
+        )
         return JobResult(
             str(source),
             str(prepared.job_dir) if prepared else "",

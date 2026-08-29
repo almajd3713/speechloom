@@ -7,7 +7,14 @@ import tempfile
 import unittest
 
 import speechloom
-from speechloom import JobDetails, Settings, TranscriptionRequest, TranscriptionService
+from speechloom import (
+    CancellationController,
+    JobDetails,
+    Settings,
+    StageEvent,
+    TranscriptionRequest,
+    TranscriptionService,
+)
 from speechloom.errors import ConfigurationError
 from speechloom.process import CommandResult
 from tests.contract.test_pipeline import FakeTools
@@ -74,6 +81,88 @@ class TranscriptionServiceTests(unittest.TestCase):
             self.assertEqual(details.state, "completed")
             self.assertEqual(details.to_dict()["state"], "completed")
 
+    def test_python_caller_receives_stable_stage_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "model.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            events: list[StageEvent] = []
+            service = TranscriptionService(
+                Settings(model=str(model), output_dir=str(root / "out")),
+                runner=FakeTools(),
+            )
+
+            result = service.transcribe(
+                TranscriptionRequest(inputs=(source,)),
+                on_event=events.append,
+            )[0]
+
+            self.assertEqual(result.state, "completed")
+            ordered_stages = list(dict.fromkeys(event.stage for event in events))
+            self.assertEqual(
+                ordered_stages,
+                [
+                    "queued",
+                    "validating",
+                    "probing",
+                    "normalizing",
+                    "transcribing",
+                    "rendering",
+                    "completed",
+                ],
+            )
+            self.assertTrue(all(event.timestamp for event in events))
+            self.assertIsNotNone(events[-1].job_id)
+
+    def test_cancel_after_canonical_commit_resumes_without_repeating_asr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "russian.mp4"
+            model = root / "model.gguf"
+            translation_model = root / "translate.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            translation_model.write_bytes(b"translation")
+            tools = FakeTools()
+            service = TranscriptionService(
+                Settings(
+                    model=str(model),
+                    translation_model=str(translation_model),
+                    source_language="ru",
+                    translate_to="en",
+                    output_dir=str(root / "out"),
+                ),
+                runner=tools,
+            )
+            controller = CancellationController()
+
+            def cancel_after_asr(event: StageEvent) -> None:
+                if event.stage == "transcribing" and event.status == "completed":
+                    controller.cancel()
+
+            cancelled = service.transcribe(
+                TranscriptionRequest(inputs=(source,)),
+                on_event=cancel_after_asr,
+                cancellation=controller,
+            )[0]
+
+            self.assertEqual(cancelled.state, "cancelled")
+            manifest = json.loads(
+                (Path(cancelled.job_dir) / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["state"], "cancelled")
+            self.assertEqual(manifest["state_detail"], "transcribed")
+            self.assertTrue((Path(cancelled.job_dir) / "transcript.json").is_file())
+            self.assertFalse((Path(cancelled.job_dir) / "translation.en.json").exists())
+
+            resumed = service.transcribe(TranscriptionRequest(inputs=(source,)))[0]
+
+            self.assertEqual(resumed.state, "completed")
+            self.assertEqual(tools.inference_calls, 1)
+            self.assertEqual(tools.translation_calls, 1)
+
     def test_python_caller_can_run_doctor_without_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -132,6 +221,8 @@ class TranscriptionServiceTests(unittest.TestCase):
     def test_public_api_is_exported_from_package_root(self) -> None:
         expected = {
             "ArtifactDetails",
+            "CancellationController",
+            "CancellationError",
             "CancellationToken",
             "DoctorReport",
             "JobDetails",

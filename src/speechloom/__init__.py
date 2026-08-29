@@ -12,6 +12,7 @@ from .contracts import (
     TranscriptionRequest,
 )
 from .doctor import DoctorReport
+from .errors import CancellationError
 from .jobs import JobResult
 from .service import TranscriptionService
 from .setup import SetupManager, SetupRequest, SetupResult, SetupStatus
@@ -19,6 +20,7 @@ from .setup import SetupManager, SetupRequest, SetupResult, SetupStatus
 __all__ = [
     "ArtifactDetails",
     "CancellationController",
+    "CancellationError",
     "CancellationToken",
     "DoctorReport",
     "JobDetails",

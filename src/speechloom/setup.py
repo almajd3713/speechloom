@@ -16,8 +16,9 @@ from typing import Callable, Sequence
 from . import __version__
 from .artifacts import atomic_write_text, sha256_file
 from .config import Settings
+from .contracts import CancellationToken, StageEvent
 from .doctor import DoctorReport, run_doctor
-from .errors import ConfigurationError, PipelineError, SetupError
+from .errors import CancellationError, ConfigurationError, PipelineError, SetupError
 from .process import CommandResult, run_command
 from .registry import ModelSpec, Registry
 from .runtime import (
@@ -31,6 +32,7 @@ from .runtime import (
 
 Runner = Callable[..., CommandResult]
 StageSink = Callable[[str], None]
+EventSink = Callable[[StageEvent], None]
 Doctor = Callable[..., DoctorReport]
 
 
@@ -110,8 +112,86 @@ class SetupManager:
         self._doctor = doctor
         self.repository_root = repository_root or _find_repository_root()
         self.config_path = config_path or self.paths.config_file
+        self._active_cancellation: CancellationToken | None = None
 
     def setup(
+        self,
+        request: SetupRequest,
+        *,
+        on_stage: StageSink | None = None,
+        on_event: EventSink | None = None,
+        cancellation: CancellationToken | None = None,
+    ) -> SetupResult:
+        self._active_cancellation = cancellation
+
+        def relay(message: str) -> None:
+            self._check_cancelled()
+            _emit(on_stage, message)
+            if on_event is not None:
+                on_event(
+                    StageEvent(
+                        job_id=None,
+                        source=None,
+                        stage=_setup_event_stage(message),
+                        status="started",
+                        message=message,
+                    )
+                )
+            self._check_cancelled()
+
+        try:
+            if on_event is not None:
+                on_event(
+                    StageEvent(
+                        job_id=None,
+                        source=None,
+                        stage="validating",
+                        status="started",
+                        message="Validating setup request and installed assets",
+                    )
+                )
+            self._check_cancelled()
+            result = self._setup(request, on_stage=relay)
+            self._check_cancelled()
+            if on_event is not None:
+                on_event(
+                    StageEvent(
+                        job_id=None,
+                        source=None,
+                        stage="completed",
+                        status="completed",
+                        message="Setup completed",
+                    )
+                )
+            return result
+        except CancellationError as exc:
+            if on_event is not None:
+                on_event(
+                    StageEvent(
+                        job_id=None,
+                        source=None,
+                        stage="cancelled",
+                        status="cancelled",
+                        message=str(exc),
+                    )
+                )
+            raise
+        except Exception as exc:
+            if on_event is not None:
+                on_event(
+                    StageEvent(
+                        job_id=None,
+                        source=None,
+                        stage="failed",
+                        status="failed",
+                        message=str(exc),
+                    )
+                )
+            raise
+        finally:
+            self._active_cancellation = None
+
+    def _setup(
         self,
         request: SetupRequest,
         *,
@@ -191,10 +271,12 @@ class SetupManager:
             updated_at=_timestamp(),
             installer_version=__version__,
         )
+        self._check_cancelled()
         save_install_state(self.paths.state_file, state)
 
         _emit(on_stage, "running diagnostics")
-        report = self._doctor(self._settings(state), runner=self.runner)
+        report = self._doctor(self._settings(state), runner=self._run_command)
+        self._check_cancelled()
         if report.ready and not request.keep_cache:
             self._clean_generated_cache()
         state = replace(
@@ -205,6 +287,15 @@ class SetupManager:
         )
         save_install_state(self.paths.state_file, state)
         return SetupResult(state, tuple(actions), report)
+
+    def _run_command(self, argv, **kwargs) -> CommandResult:
+        if self._active_cancellation is not None:
+            kwargs.setdefault("cancellation", self._active_cancellation)
+        return self.runner(argv, **kwargs)
+
+    def _check_cancelled(self) -> None:
+        if self._active_cancellation is not None:
+            self._active_cancellation.raise_if_cancelled()
 
     def status(self) -> SetupStatus:
         state = load_install_state(self.paths.state_file)
@@ -291,7 +382,9 @@ class SetupManager:
         if not _command_available("nvidia-smi"):
             return False
         try:
-            return self.runner(["nvidia-smi"], check=False).returncode == 0
+            return self._run_command(["nvidia-smi"], check=False).returncode == 0
+        except CancellationError:
+            raise
         except PipelineError:
             return False
 
@@ -358,7 +451,7 @@ class SetupManager:
         ]
         if "translation" in features:
             argv.append("--with-nmt")
-        self.runner(argv)
+        self._run_command(argv)
         executable = prefix / self.registry.runtime.executable
         if not executable.is_file():
             raise SetupError(f"Runtime build completed without creating {executable}")
@@ -373,7 +466,7 @@ class SetupManager:
 
     def _ensure_build_tools(self) -> None:
         try:
-            result = self.runner(["cmake", "--version"], check=False)
+            result = self._run_command(["cmake", "--version"], check=False)
             match = re.search(r"cmake version (\d+)\.(\d+)", result.stdout)
             valid = bool(
                 result.returncode == 0
@@ -381,11 +474,13 @@ class SetupManager:
                 and int(match.group(1)) == 3
                 and int(match.group(2)) >= 26
             )
+        except CancellationError:
+            raise
         except PipelineError:
             valid = False
         if valid:
             return
-        self.runner(
+        self._run_command(
             [
                 "bash",
                 str(self._script_path("bootstrap_build_tools.sh")),
@@ -455,7 +550,7 @@ class SetupManager:
                     str(self.paths.cache_dir / "huggingface"),
                 ]
             )
-        self.runner(argv)
+        self._run_command(argv)
         path = self.paths.models_dir / spec.filename
         if not path.is_file():
             raise SetupError(f"Model installation completed without creating {path}")
@@ -509,7 +604,7 @@ class SetupManager:
         )
 
     def _runtime_has_translation(self, executable: Path) -> bool:
-        result = self.runner([str(executable), "doctor", "--json"], check=False)
+        result = self._run_command([str(executable), "doctor", "--json"], check=False)
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -616,6 +711,18 @@ def _command_available(command: str) -> bool:
 def _emit(sink: StageSink | None, message: str) -> None:
     if sink is not None:
         sink(message)
+
+
+def _setup_event_stage(message: str) -> str:
+    if "runtime" in message:
+        return "installing_runtime"
+    if "model" in message:
+        return "installing_models"
+    if "configuration" in message:
+        return "configuring"
+    if "diagnostics" in message:
+        return "validating"
+    return "validating"
 
 
 def _timestamp() -> str:
