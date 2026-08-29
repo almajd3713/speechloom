@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "runtime": {
+    "id": "nemo-speech-cpp",
+    "repository": "https://github.com/NVIDIA/NeMo-Speech.cpp.git",
+    "revision": "4f9676226f667d14608487df744f375db87127f8",
+    "build_script": "bootstrap_runtime.sh",
+    "executable": "bin/nemo-speech",
+    "backends": ["cpu", "cuda", "vulkan"],
+    "features": ["asr", "translation"]
+  },
+  "models": [
+    {
+      "id": "parakeet-tdt-0.6b-v3-q8",
+      "kind": "asr",
+      "upstream_id": "nvidia/parakeet-tdt-0.6b-v3",
+      "revision": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+      "filename": "parakeet-tdt-0.6b-v3.q8_0.gguf",
+      "sha256": "e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e",
+      "url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf",
+      "install_script": "download_model.sh",
+      "minimum_free_bytes": 1073741824
+    },
+    {
+      "id": "riva-translate-4b-instruct-v2-q8",
+      "kind": "translation",
+      "upstream_id": "nvidia/Riva-Translate-4B-Instruct-v2",
+      "revision": "040d958b128018ff0bed2542a7b51005e9ea563c",
+      "filename": "riva-translate-4b-instruct-v2.q8_0.gguf",
+      "sha256": null,
+      "url": null,
+      "install_script": "bootstrap_translation_model.sh",
+      "minimum_free_bytes": 17179869184
+    }
+  ]
+}
