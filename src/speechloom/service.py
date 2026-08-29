@@ -53,7 +53,7 @@ class TranscriptionService:
             )
         if request.diarize and not self._settings.diar_model:
             raise ConfigurationError(
-                "Diarization requires a configured diar_model"
+                "--diarize requires --diar-model or SPEECHLOOM_DIAR_MODEL"
             )
 
         sources = discover_inputs(list(request.inputs), recursive=request.recursive)

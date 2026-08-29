@@ -11,10 +11,9 @@ from typing import Any, Sequence
 
 from . import __version__
 from .config import Settings, load_settings
-from .doctor import run_doctor
-from .errors import ConfigurationError, PipelineError
-from .jobs import Pipeline, PipelineOptions, inspect_job
-from .media import discover_inputs
+from .contracts import TranscriptionRequest
+from .errors import PipelineError
+from .service import TranscriptionService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -90,13 +89,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "inspect":
-            return _inspect(args)
+            return _inspect(args, TranscriptionService(Settings()))
         cli_values = _settings_cli_values(args)
         settings = load_settings(config_path=args.config, cli_values=cli_values)
+        service = TranscriptionService(settings)
         if args.command == "doctor":
-            return _doctor(args, settings)
+            return _doctor(args, service)
         if args.command == "transcribe":
-            return _transcribe(args, settings)
+            return _transcribe(args, service)
         parser.error(f"Unknown command: {args.command}")
     except KeyboardInterrupt:
         print("Interrupted; partial job state was preserved for resume.", file=sys.stderr)
@@ -110,9 +110,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 2
 
 
-def _doctor(args: argparse.Namespace, settings: Settings) -> int:
-    report = run_doctor(
-        settings,
+def _doctor(args: argparse.Namespace, service: TranscriptionService) -> int:
+    report = service.doctor(
         output_dir=Path(args.output_dir) if args.output_dir else None,
     )
     if args.json:
@@ -125,38 +124,16 @@ def _doctor(args: argparse.Namespace, settings: Settings) -> int:
     return 0 if report.ready else 1
 
 
-def _transcribe(args: argparse.Namespace, settings: Settings) -> int:
-    if not settings.model:
-        raise ConfigurationError(
-            "No ASR model configured; pass --model or set SPEECHLOOM_MODEL"
-        )
-    if args.diarize and not settings.diar_model:
-        raise ConfigurationError("--diarize requires --diar-model or SPEECHLOOM_DIAR_MODEL")
-    sources = discover_inputs(args.inputs, recursive=args.recursive)
-    options = PipelineOptions(
-        output_dir=Path(settings.output_dir),
-        model=Path(settings.model).expanduser(),
-        ffmpeg=settings.ffmpeg,
-        ffprobe=settings.ffprobe,
-        nemo_speech=settings.nemo_speech,
-        device=settings.device,
-        formats=settings.formats,
+def _transcribe(args: argparse.Namespace, service: TranscriptionService) -> int:
+    request = TranscriptionRequest(
+        inputs=tuple(args.inputs),
+        recursive=args.recursive,
         audio_stream=args.audio_stream,
         diarize=args.diarize,
-        diar_model=Path(settings.diar_model).expanduser() if settings.diar_model else None,
-        translation_model=(
-            Path(settings.translation_model).expanduser() if settings.translation_model else None
-        ),
-        source_language=settings.source_language,
-        translate_to=settings.translate_to,
-        keep_audio=settings.keep_audio,
-        resume=settings.resume,
         force=args.force,
-        workers=settings.workers,
         fail_fast=args.fail_fast,
-        shared_model=settings.shared_model,
     )
-    results = Pipeline(options).run(sources)
+    results = service.transcribe(request)
     if args.json:
         print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
     else:
@@ -170,20 +147,18 @@ def _transcribe(args: argparse.Namespace, settings: Settings) -> int:
     return 1 if any(result.error for result in results) else 0
 
 
-def _inspect(args: argparse.Namespace) -> int:
-    manifest = inspect_job(args.job)
+def _inspect(args: argparse.Namespace, service: TranscriptionService) -> int:
+    details = service.inspect(args.job)
     if args.json:
-        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        print(json.dumps(details.to_dict(), ensure_ascii=False, indent=2))
     else:
-        source = manifest.get("source", {}).get("path", "unknown")
-        print(f"Job: {manifest.get('job_id', 'unknown')}")
-        print(f"State: {manifest.get('state', 'unknown')}")
-        print(f"Source: {source}")
-        for format_name, artifact in manifest.get("artifacts", {}).items():
-            print(f"{format_name.upper()}: {artifact.get('path')} ({artifact.get('size')} bytes)")
-        error = manifest.get("error")
-        if error:
-            print(f"Error: {error.get('message', error)}")
+        print(f"Job: {details.job_id or 'unknown'}")
+        print(f"State: {details.state}")
+        print(f"Source: {details.source or 'unknown'}")
+        for artifact in details.artifacts:
+            print(f"{artifact.name.upper()}: {artifact.path} ({artifact.size} bytes)")
+        if details.error:
+            print(f"Error: {details.error}")
     return 0
 
 
