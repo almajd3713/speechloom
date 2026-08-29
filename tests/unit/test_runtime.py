@@ -62,6 +62,7 @@ class InstallStateTests(unittest.TestCase):
                         id="parakeet",
                         kind="asr",
                         path="/models/parakeet.gguf",
+                        license="CC-BY-4.0",
                     ),
                 ),
             )
@@ -88,6 +89,7 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("cuda", registry.runtime.backends)
         self.assertEqual(registry.model("asr").sha256, "e3880d0a" + "aaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e")
         self.assertEqual(registry.model("translation").kind, "translation")
+        self.assertEqual(registry.model("diarization").license, "CC-BY-4.0")
 
     def test_registry_rejects_unpinned_revisions(self) -> None:
         registry = Registry.load()

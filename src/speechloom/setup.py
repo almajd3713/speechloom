@@ -117,11 +117,6 @@ class SetupManager:
         *,
         on_stage: StageSink | None = None,
     ) -> SetupResult:
-        if "diarization" in request.features:
-            raise SetupError(
-                "Managed diarization assets are not in the pinned registry yet; "
-                "install a compatible Sortformer model and configure diar_model manually"
-            )
         self.paths.create()
         old_state = load_install_state(self.paths.state_file)
         backend = self._resolve_backend(request.backend, old_state)
@@ -152,6 +147,17 @@ class SetupManager:
         elif asr.source == "legacy" and not self._state_has_path(old_state, asr.path):
             actions.append("imported legacy ASR model")
         installed_models.append(asr)
+
+        if "diarization" in request.features:
+            diar_spec = self.registry.model("diarization")
+            diar = self._reuse_model(old_state, diar_spec) or self._legacy_model(diar_spec)
+            if diar is None:
+                _emit(on_stage, "installing diarization model")
+                diar = self._install_model(diar_spec)
+                actions.append("installed diarization model")
+            elif diar.source == "legacy" and not self._state_has_path(old_state, diar.path):
+                actions.append("imported legacy diarization model")
+            installed_models.append(diar)
 
         if "translation" in request.features:
             translation_spec = self.registry.model("translation")
@@ -321,6 +327,7 @@ class SetupManager:
             executable,
             revision=self.registry.runtime.revision,
             source="legacy",
+            license=self.registry.runtime.license,
         )
 
     def _legacy_executable(self, backend: str) -> Path | None:
@@ -361,6 +368,7 @@ class SetupManager:
             executable,
             revision=self.registry.runtime.revision,
             source="source-build",
+            license=self.registry.runtime.license,
         )
 
     def _ensure_build_tools(self) -> None:
@@ -414,6 +422,7 @@ class SetupManager:
             candidate.resolve(),
             revision=spec.revision,
             source="legacy",
+            license=spec.license,
         )
 
     def _install_model(self, spec: ModelSpec) -> InstalledArtifact:
@@ -424,7 +433,20 @@ class SetupManager:
             "--destination",
             str(self.paths.models_dir),
         ]
-        if spec.kind == "translation":
+        if spec.url is not None and spec.sha256 is not None:
+            argv.extend(
+                [
+                    "--download-cache",
+                    str(self.paths.downloads_dir),
+                    "--url",
+                    spec.url,
+                    "--filename",
+                    spec.filename,
+                    "--sha256",
+                    spec.sha256,
+                ]
+            )
+        elif spec.kind == "translation":
             argv.extend(
                 [
                     "--converter-env",
@@ -437,8 +459,15 @@ class SetupManager:
         path = self.paths.models_dir / spec.filename
         if not path.is_file():
             raise SetupError(f"Model installation completed without creating {path}")
-        artifact = self._record(spec.id, spec.kind, path, revision=spec.revision)
+        artifact = self._record(
+            spec.id,
+            spec.kind,
+            path,
+            revision=spec.revision,
+            license=spec.license,
+        )
         if spec.sha256 and artifact.sha256 != spec.sha256:
+            path.unlink(missing_ok=True)
             raise SetupError(f"Installed {spec.kind} model checksum does not match the registry")
         return artifact
 
@@ -470,9 +499,11 @@ class SetupManager:
         asr = state.model("asr")
         assert asr is not None
         translation = state.model("translation")
+        diarization = state.model("diarization")
         return Settings(
             nemo_speech=state.runtime.path,
             model=asr.path,
+            diar_model=diarization.path if diarization else None,
             translation_model=translation.path if translation else None,
             device=state.backend,
         )
@@ -497,6 +528,7 @@ class SetupManager:
         *,
         revision: str | None = None,
         source: str = "managed",
+        license: str | None = None,
     ) -> InstalledArtifact:
         return InstalledArtifact(
             id=artifact_id,
@@ -506,6 +538,7 @@ class SetupManager:
             sha256=sha256_file(path),
             size=path.stat().st_size,
             source=source,
+            license=license,
         )
 
     def _valid_artifact(self, artifact: InstalledArtifact) -> bool:

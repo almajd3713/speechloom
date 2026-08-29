@@ -39,6 +39,16 @@ conversion):
 speechloom setup --backend cuda --features translation
 ```
 
+Speaker diarization uses the pinned four-speaker Sortformer model:
+
+```bash
+speechloom setup --features diarization
+speechloom transcribe meeting.mp4 --diarize
+```
+
+Multiple optional features can be selected with
+`--features translation,diarization`.
+
 Setup writes configuration under `~/.config/speechloom` and managed assets
 under `~/.local/share/speechloom`. It respects the standard XDG environment
 variables. Existing repository-local `.runtime` assets are imported in place;

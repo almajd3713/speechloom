@@ -21,6 +21,7 @@ class RuntimeSpec:
     revision: str
     build_script: str
     executable: str
+    license: str
     backends: tuple[str, ...]
     features: tuple[str, ...]
 
@@ -35,6 +36,7 @@ class ModelSpec:
     sha256: str | None
     url: str | None
     install_script: str
+    license: str
     minimum_free_bytes: int
 
 
@@ -64,6 +66,7 @@ class Registry:
                 revision=_revision(runtime_data["revision"]),
                 build_script=str(runtime_data["build_script"]),
                 executable=str(runtime_data["executable"]),
+                license=str(runtime_data["license"]),
                 backends=tuple(str(item) for item in runtime_data["backends"]),
                 features=tuple(str(item) for item in runtime_data["features"]),
             )
@@ -95,6 +98,7 @@ def _model_spec(payload: dict[str, Any]) -> ModelSpec:
         sha256=str(digest) if digest is not None else None,
         url=_https_url(url, "model URL") if url is not None else None,
         install_script=str(payload["install_script"]),
+        license=str(payload["license"]),
         minimum_free_bytes=int(payload["minimum_free_bytes"]),
     )
 

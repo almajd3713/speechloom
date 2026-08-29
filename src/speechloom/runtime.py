@@ -78,6 +78,7 @@ class InstalledArtifact:
     sha256: str | None = None
     size: int | None = None
     source: str = "managed"
+    license: str | None = None
 
 
 @dataclass(frozen=True)

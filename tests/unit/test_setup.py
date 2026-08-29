@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import hashlib
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,14 +10,16 @@ from unittest.mock import patch
 
 from speechloom.doctor import DoctorReport
 from speechloom.process import CommandResult
+from speechloom.process import run_command
 from speechloom.registry import Registry
 from speechloom.runtime import AppPaths, load_install_state
 from speechloom.setup import SetupManager, SetupRequest
 
 
 class FakeInstaller:
-    def __init__(self, asr_content: bytes) -> None:
+    def __init__(self, asr_content: bytes, diar_content: bytes = b"diar") -> None:
         self.asr_content = asr_content
+        self.diar_content = diar_content
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, argv, **kwargs) -> CommandResult:
@@ -33,14 +36,16 @@ class FakeInstaller:
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_bytes(b"runtime")
             executable.chmod(0o755)
-        elif "download_model.sh" in command[1]:
+        elif "download_artifact.sh" in command[1]:
             destination = Path(command[command.index("--destination") + 1])
+            filename = command[command.index("--filename") + 1]
             destination.mkdir(parents=True, exist_ok=True)
-            (destination / "parakeet.gguf").write_bytes(self.asr_content)
+            content = self.asr_content if filename == "parakeet.gguf" else self.diar_content
+            (destination / filename).write_bytes(content)
         return CommandResult(command, 0, "", "")
 
 
-def _registry(asr_content: bytes) -> Registry:
+def _registry(asr_content: bytes, diar_content: bytes = b"diar") -> Registry:
     registry = Registry.load()
     asr = replace(
         registry.model("asr"),
@@ -48,7 +53,16 @@ def _registry(asr_content: bytes) -> Registry:
         sha256=hashlib.sha256(asr_content).hexdigest(),
         minimum_free_bytes=0,
     )
-    return replace(registry, models=(asr, registry.model("translation")))
+    diar = replace(
+        registry.model("diarization"),
+        filename="sortformer.gguf",
+        sha256=hashlib.sha256(diar_content).hexdigest(),
+        minimum_free_bytes=0,
+    )
+    return replace(
+        registry,
+        models=(asr, diar, registry.model("translation")),
+    )
 
 
 def _paths(root: Path) -> AppPaths:
@@ -81,7 +95,7 @@ class SetupManagerTests(unittest.TestCase):
             root = Path(directory)
             scripts = root / "repo/scripts"
             scripts.mkdir(parents=True)
-            for name in ("bootstrap_runtime.sh", "download_model.sh"):
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
                 (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
             installer = FakeInstaller(b"asr")
             manager = SetupManager(
@@ -133,6 +147,33 @@ class SetupManagerTests(unittest.TestCase):
             self.assertTrue(model.exists())
             self.assertFalse(any(call[0] == "bash" for call in installer.calls))
 
+    def test_diarization_feature_installs_pinned_optional_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            installer = FakeInstaller(b"asr", b"diar")
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr", b"diar"),
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            result = manager.setup(
+                SetupRequest(backend="cpu", features=("diarization",))
+            )
+
+            diar = result.state.model("diarization")
+            self.assertIsNotNone(diar)
+            assert diar is not None
+            self.assertEqual(diar.license, "CC-BY-4.0")
+            self.assertEqual(Path(diar.path).read_bytes(), b"diar")
+            self.assertIn("installed diarization model", result.actions)
+
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -148,6 +189,58 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual(removed, (paths.downloads_dir,))
             self.assertFalse(paths.downloads_dir.exists())
             self.assertTrue(paths.build_tools_dir.exists())
+
+
+class DownloadArtifactScriptTests(unittest.TestCase):
+    def test_verifies_before_publish_and_removes_invalid_download(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"--output\" ]; then output=$2; shift 2; else shift; fi\n"
+                "done\n"
+                "printf fixture-model > \"$output\"\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            script = Path(__file__).resolve().parents[2] / "scripts/download_artifact.sh"
+            destination = root / "models"
+            cache = root / "cache"
+            digest = hashlib.sha256(b"fixture-model").hexdigest()
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+            }
+            base_argv = [
+                "bash",
+                str(script),
+                "--destination",
+                str(destination),
+                "--download-cache",
+                str(cache),
+                "--url",
+                "https://models.example/fixture.gguf",
+                "--filename",
+                "fixture.gguf",
+                "--sha256",
+            ]
+
+            installed = run_command([*base_argv, digest], env=environment)
+            (destination / "fixture.gguf").unlink()
+            rejected = run_command(
+                [*base_argv, "0" * 64],
+                env=environment,
+                check=False,
+            )
+
+            self.assertEqual(installed.returncode, 0)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((destination / "fixture.gguf").exists())
+            self.assertFalse((cache / "fixture.gguf.part").exists())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
     "revision": "4f9676226f667d14608487df744f375db87127f8",
     "build_script": "bootstrap_runtime.sh",
     "executable": "bin/nemo-speech",
+    "license": "Apache-2.0",
     "backends": ["cpu", "cuda", "vulkan"],
     "features": ["asr", "translation"]
   },
@@ -18,8 +19,21 @@
       "filename": "parakeet-tdt-0.6b-v3.q8_0.gguf",
       "sha256": "e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e",
       "url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf",
-      "install_script": "download_model.sh",
+      "install_script": "download_artifact.sh",
+      "license": "CC-BY-4.0",
       "minimum_free_bytes": 1073741824
+    },
+    {
+      "id": "sortformer-streaming-4spk-v2-q8",
+      "kind": "diarization",
+      "upstream_id": "nvidia/diar_streaming_sortformer_4spk-v2",
+      "revision": "5240a64075176943f677d30fa2171c780229f341",
+      "filename": "diar_streaming_sortformer_4spk-v2.q8_0.gguf",
+      "sha256": "0679cfeb1ce356d0dea9470b31274f4bfc7eb927497d82005483770666da998a",
+      "url": "https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2/resolve/5240a64075176943f677d30fa2171c780229f341/diar_streaming_sortformer_4spk-v2.q8_0.gguf",
+      "install_script": "download_artifact.sh",
+      "license": "CC-BY-4.0",
+      "minimum_free_bytes": 314572800
     },
     {
       "id": "riva-translate-4b-instruct-v2-q8",
@@ -30,6 +44,7 @@
       "sha256": null,
       "url": null,
       "install_script": "bootstrap_translation_model.sh",
+      "license": "NVIDIA-Open-Model-License",
       "minimum_free_bytes": 17179869184
     }
   ]
