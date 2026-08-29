@@ -3,18 +3,17 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "parakeet-transcribe"
+name = "speechloom"
 version = "0.1.0"
 description = "Reliable local audio and video transcription with NeMo-Speech.cpp"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "parakeet-transcribe contributors" }]
+authors = [{ name = "Speechloom contributors" }]
 dependencies = []
 
 [project.scripts]
-parakeet-transcribe = "parakeet_transcribe.cli:main"
+speechloom = "speechloom.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

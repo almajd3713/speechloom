@@ -5,8 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from parakeet_transcribe.jobs import Pipeline, PipelineOptions, inspect_job
-from parakeet_transcribe.process import CommandResult
+from speechloom.jobs import Pipeline, PipelineOptions, inspect_job
+from speechloom.process import CommandResult
 
 
 class FakeTools:

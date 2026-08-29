@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from .errors import ConfigurationError
 
 
-ENV_PREFIX = "PARAKEET_TRANSCRIBE_"
+ENV_PREFIX = "SPEECHLOOM_"
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ def default_config_path(env: Mapping[str, str] | None = None) -> Path:
     environ = env or os.environ
     config_home = environ.get("XDG_CONFIG_HOME")
     root = Path(config_home) if config_home else Path.home() / ".config"
-    return root / "parakeet-transcribe" / "config.ini"
+    return root / "speechloom" / "config.ini"
 
 
 def load_settings(
@@ -66,9 +66,9 @@ def _read_config(path: Path) -> dict[str, str]:
             parser.read_file(handle)
     except (OSError, configparser.Error) as exc:
         raise ConfigurationError(f"Could not read config file: {path}") from exc
-    if "parakeet-transcribe" not in parser:
-        raise ConfigurationError(f"Config file lacks [parakeet-transcribe]: {path}")
-    return dict(parser["parakeet-transcribe"])
+    if "speechloom" not in parser:
+        raise ConfigurationError(f"Config file lacks [speechloom]: {path}")
+    return dict(parser["speechloom"])
 
 
 def _read_environment(env: Mapping[str, str]) -> dict[str, str]:

@@ -6,21 +6,21 @@ import shutil
 import tempfile
 import unittest
 
-from parakeet_transcribe.jobs import Pipeline, PipelineOptions
-from parakeet_transcribe.schema import Transcript
+from speechloom.jobs import Pipeline, PipelineOptions
+from speechloom.schema import Transcript
 
 
 class RealRuntimeTests(unittest.TestCase):
     @unittest.skipUnless(
-        os.environ.get("PARAKEET_TEST_NEMO")
-        and os.environ.get("PARAKEET_TEST_MODEL")
-        and os.environ.get("PARAKEET_TEST_MEDIA"),
-        "set PARAKEET_TEST_NEMO, PARAKEET_TEST_MODEL, and PARAKEET_TEST_MEDIA",
+        os.environ.get("SPEECHLOOM_TEST_NEMO")
+        and os.environ.get("SPEECHLOOM_TEST_MODEL")
+        and os.environ.get("SPEECHLOOM_TEST_MEDIA"),
+        "set SPEECHLOOM_TEST_NEMO, SPEECHLOOM_TEST_MODEL, and SPEECHLOOM_TEST_MEDIA",
     )
     def test_real_cpu_transcription_contract(self) -> None:
-        executable = Path(os.environ["PARAKEET_TEST_NEMO"])
-        model = Path(os.environ["PARAKEET_TEST_MODEL"])
-        media = Path(os.environ["PARAKEET_TEST_MEDIA"])
+        executable = Path(os.environ["SPEECHLOOM_TEST_NEMO"])
+        model = Path(os.environ["SPEECHLOOM_TEST_MODEL"])
+        media = Path(os.environ["SPEECHLOOM_TEST_MEDIA"])
         with tempfile.TemporaryDirectory() as directory:
             result = Pipeline(
                 PipelineOptions(
@@ -37,15 +37,15 @@ class RealRuntimeTests(unittest.TestCase):
             self.assertTrue((Path(result.job_dir) / "subtitles.srt").is_file())
 
     @unittest.skipUnless(
-        os.environ.get("PARAKEET_TEST_NEMO")
-        and os.environ.get("PARAKEET_TEST_MODEL")
-        and os.environ.get("PARAKEET_TEST_MEDIA"),
-        "set PARAKEET_TEST_NEMO, PARAKEET_TEST_MODEL, and PARAKEET_TEST_MEDIA",
+        os.environ.get("SPEECHLOOM_TEST_NEMO")
+        and os.environ.get("SPEECHLOOM_TEST_MODEL")
+        and os.environ.get("SPEECHLOOM_TEST_MEDIA"),
+        "set SPEECHLOOM_TEST_NEMO, SPEECHLOOM_TEST_MODEL, and SPEECHLOOM_TEST_MEDIA",
     )
     def test_real_shared_model_batch_contract(self) -> None:
-        executable = Path(os.environ["PARAKEET_TEST_NEMO"])
-        model = Path(os.environ["PARAKEET_TEST_MODEL"])
-        media = Path(os.environ["PARAKEET_TEST_MEDIA"])
+        executable = Path(os.environ["SPEECHLOOM_TEST_NEMO"])
+        model = Path(os.environ["SPEECHLOOM_TEST_MODEL"])
+        media = Path(os.environ["SPEECHLOOM_TEST_MEDIA"])
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sources = [root / "a" / "recording.wav", root / "b" / "recording.wav"]

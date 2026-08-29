@@ -1,4 +1,4 @@
-# parakeet-transcribe
+# Speechloom
 
 Local audio and video transcription using
 [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) and Parakeet TDT
@@ -55,15 +55,15 @@ runtime you built.
 Check the installation:
 
 ```bash
-parakeet-transcribe --config config.ini doctor
+speechloom --config config.ini doctor
 ```
 
 Transcribe one or more files:
 
 ```bash
-parakeet-transcribe --config config.ini transcribe recording.mp4
-parakeet-transcribe --config config.ini transcribe recordings/ --recursive --workers 2
-parakeet-transcribe --config config.ini transcribe recording.mp4 --output-dir ./output
+speechloom --config config.ini transcribe recording.mp4
+speechloom --config config.ini transcribe recordings/ --recursive --workers 2
+speechloom --config config.ini transcribe recording.mp4 --output-dir ./output
 ```
 
 For transcribing between different languages, set the translation model and source/target languages in `config.ini`:
@@ -80,20 +80,20 @@ named `translation.en.*` and `subtitles.en.*`.
 Inspect a completed job:
 
 ```bash
-parakeet-transcribe inspect transcripts/<job-directory>
+speechloom inspect transcripts/<job-directory>
 ```
 
 Each job contains a manifest, canonical `transcript.json`, and the requested
 text and subtitle formats. Completed jobs are reused unless `--force` is set.
 
-Run `parakeet-transcribe transcribe --help` for all options.
+Run `speechloom transcribe --help` for all options.
 
 ## Configuration
 
 Settings are read in this order:
 
 1. command-line options
-2. `PARAKEET_TRANSCRIBE_*` environment variables
+2. `SPEECHLOOM_*` environment variables
 3. the selected INI file
 4. defaults
 
@@ -105,8 +105,8 @@ See `config.example.ini` for available settings.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-Real-runtime tests are enabled by setting `PARAKEET_TEST_NEMO`,
-`PARAKEET_TEST_MODEL`, and `PARAKEET_TEST_MEDIA`.
+Real-runtime tests are enabled by setting `SPEECHLOOM_TEST_NEMO`,
+`SPEECHLOOM_TEST_MODEL`, and `SPEECHLOOM_TEST_MEDIA`.
 
 ## License
 

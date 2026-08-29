@@ -34,7 +34,7 @@ Parakeet v3 automatically transcribes its 25 supported European languages and do
 
 ## A batch item fails
 
-Successful jobs remain complete. Inspect the failed job's `manifest.json` or run `parakeet-transcribe inspect <job-dir> --json`. Correct the underlying issue and rerun with resume enabled.
+Successful jobs remain complete. Inspect the failed job's `manifest.json` or run `speechloom inspect <job-dir> --json`. Correct the underlying issue and rerun with resume enabled.
 
 ## NeMo native exit codes
 

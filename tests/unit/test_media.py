@@ -4,13 +4,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from parakeet_transcribe.media import (
+from speechloom.media import (
     can_passthrough_wav,
     normalize_audio,
     probe_media,
     select_audio_stream,
 )
-from parakeet_transcribe.process import CommandResult
+from speechloom.process import CommandResult
 
 
 class MediaTests(unittest.TestCase):
@@ -57,4 +57,3 @@ class MediaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

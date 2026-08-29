@@ -19,7 +19,7 @@ from .media import discover_inputs
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="parakeet-transcribe",
+        prog="speechloom",
         description="Transcribe local audio and video with NeMo-Speech.cpp.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -128,10 +128,10 @@ def _doctor(args: argparse.Namespace, settings: Settings) -> int:
 def _transcribe(args: argparse.Namespace, settings: Settings) -> int:
     if not settings.model:
         raise ConfigurationError(
-            "No ASR model configured; pass --model or set PARAKEET_TRANSCRIBE_MODEL"
+            "No ASR model configured; pass --model or set SPEECHLOOM_MODEL"
         )
     if args.diarize and not settings.diar_model:
-        raise ConfigurationError("--diarize requires --diar-model or PARAKEET_TRANSCRIBE_DIAR_MODEL")
+        raise ConfigurationError("--diarize requires --diar-model or SPEECHLOOM_DIAR_MODEL")
     sources = discover_inputs(args.inputs, recursive=args.recursive)
     options = PipelineOptions(
         output_dir=Path(settings.output_dir),

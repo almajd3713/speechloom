@@ -4,14 +4,14 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from parakeet_transcribe.nemo import (
+from speechloom.nemo import (
     NemoOptions,
     TranslationOptions,
     adapt_payload,
     transcribe,
     translate_texts,
 )
-from parakeet_transcribe.process import CommandResult
+from speechloom.process import CommandResult
 
 
 class NemoAdapterTests(unittest.TestCase):

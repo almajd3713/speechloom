@@ -4,12 +4,19 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from parakeet_transcribe.cli import build_parser
-from parakeet_transcribe.config import load_settings
-from parakeet_transcribe.errors import ConfigurationError
+from speechloom.cli import build_parser
+from speechloom.config import default_config_path, load_settings
+from speechloom.errors import ConfigurationError
 
 
 class SettingsTests(unittest.TestCase):
+    def test_speechloom_public_names(self) -> None:
+        self.assertEqual(build_parser().prog, "speechloom")
+        self.assertEqual(
+            default_config_path({"XDG_CONFIG_HOME": "/tmp/config"}),
+            Path("/tmp/config/speechloom/config.ini"),
+        )
+
     def test_transcribe_accepts_output_directory(self) -> None:
         args = build_parser().parse_args(
             ["transcribe", "recording.wav", "--output-dir", "custom-output"]
@@ -46,7 +53,7 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.ini"
             config.write_text(
-                "[parakeet-transcribe]\n"
+                "[speechloom]\n"
                 "translation_model = from-config.gguf\n"
                 "source_language = ru\n"
                 "translate_to = en\n",
@@ -65,12 +72,12 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = Path(directory) / "config.ini"
             config.write_text(
-                "[parakeet-transcribe]\nmodel = from-file.gguf\nworkers = 2\ndevice = cpu\nshared_model = false\n",
+                "[speechloom]\nmodel = from-file.gguf\nworkers = 2\ndevice = cpu\nshared_model = false\n",
                 encoding="utf-8",
             )
             settings = load_settings(
                 config_path=config,
-                env={"PARAKEET_TRANSCRIBE_MODEL": "from-env.gguf", "PARAKEET_TRANSCRIBE_WORKERS": "3"},
+                env={"SPEECHLOOM_MODEL": "from-env.gguf", "SPEECHLOOM_WORKERS": "3"},
                 cli_values={"model": "from-cli.gguf", "formats": "json,txt"},
             )
         self.assertEqual(settings.model, "from-cli.gguf")
@@ -81,7 +88,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_rejects_invalid_boolean(self) -> None:
         with self.assertRaises(ConfigurationError):
-            load_settings(env={"PARAKEET_TRANSCRIBE_KEEP_AUDIO": "occasionally"})
+            load_settings(env={"SPEECHLOOM_KEEP_AUDIO": "occasionally"})
 
     def test_rejects_unknown_format(self) -> None:
         with self.assertRaises(ConfigurationError):

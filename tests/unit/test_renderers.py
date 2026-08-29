@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from parakeet_transcribe.renderers import build_segments, render_srt, render_text, render_vtt
-from parakeet_transcribe.schema import Transcript, Word
+from speechloom.renderers import build_segments, render_srt, render_text, render_vtt
+from speechloom.schema import Transcript, Word
 
 
 class RendererTests(unittest.TestCase):
@@ -35,4 +35,3 @@ class RendererTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
