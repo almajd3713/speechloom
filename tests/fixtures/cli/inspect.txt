@@ -1,0 +1,8 @@
+usage: speechloom inspect [-h] [--json] job
+
+positional arguments:
+  job
+
+options:
+  -h, --help  show this help message and exit
+  --json      Emit the complete manifest

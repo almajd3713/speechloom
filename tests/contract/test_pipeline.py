@@ -105,7 +105,31 @@ class PipelineContractTests(unittest.TestCase):
             self.assertTrue((job / "subtitles.vtt").is_file())
             self.assertFalse((job / ".work" / "audio.wav").exists())
             manifest = inspect_job(job)
+            self.assertEqual(manifest["schema_version"], 1)
             self.assertEqual(manifest["state"], "completed")
+            self.assertEqual(
+                set(manifest),
+                {
+                    "artifacts",
+                    "created_at",
+                    "diar_model",
+                    "job_id",
+                    "media",
+                    "model",
+                    "normalized_audio",
+                    "options",
+                    "schema_version",
+                    "selected_audio_stream",
+                    "source",
+                    "state",
+                    "state_detail",
+                    "timings",
+                    "tools",
+                    "translation_model",
+                    "updated_at",
+                    "warnings",
+                },
+            )
             self.assertEqual(set(manifest["artifacts"]), {"json", "txt", "srt", "vtt"})
             nemo_calls = [call for call in tools.calls if call[:2] == ("nemo-speech", "transcribe")]
             self.assertEqual(len(nemo_calls), 1)
@@ -179,6 +203,20 @@ class PipelineContractTests(unittest.TestCase):
             self.assertEqual(translation["source_language"], "ru")
             self.assertEqual(translation["target_language"], "en")
             self.assertEqual(translation["segments"][0]["source_text"], "Привет, world!")
+            manifest = inspect_job(job)
+            self.assertEqual(
+                set(manifest["artifacts"]),
+                {
+                    "json",
+                    "txt",
+                    "srt",
+                    "vtt",
+                    "translation.en.json",
+                    "translation.en.txt",
+                    "subtitles.en.srt",
+                    "subtitles.en.vtt",
+                },
+            )
 
     def test_shared_batch_loads_translation_model_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

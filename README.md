@@ -50,6 +50,10 @@ Riva Translate model (the conversion needs about 16 GiB free):
 Copy `config.example.ini` and set `nemo_speech`, `model`, and `device` for the
 runtime you built.
 
+The complete repository-local procedure is retained as the
+[setup fallback](docs/operations/repository-local-setup.md) during the managed-setup
+migration.
+
 ## Usage
 
 Check the installation:

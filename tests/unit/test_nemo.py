@@ -9,6 +9,7 @@ from speechloom.nemo import (
     TranslationOptions,
     adapt_payload,
     transcribe,
+    transcribe_directory,
     translate_texts,
 )
 from speechloom.process import CommandResult
@@ -56,12 +57,74 @@ class NemoAdapterTests(unittest.TestCase):
                 duration=1.0,
                 runner=runner,
             )
-            self.assertEqual(len(calls), 1)
-            self.assertIn("--word-times", calls[0])
-            self.assertEqual(calls[0][calls[0].index("--format") + 1], "json")
-            self.assertIn("--diar-model", calls[0])
-            self.assertIn("cuda:0", calls[0])
+            self.assertEqual(
+                calls,
+                [
+                    (
+                        "nemo-speech",
+                        "transcribe",
+                        str(audio),
+                        "--model",
+                        str(model),
+                        "--format",
+                        "json",
+                        "--word-times",
+                        "--device",
+                        "cuda:0",
+                        "--diar-model",
+                        str(diar),
+                    )
+                ],
+            )
             self.assertEqual(transcript.words[0].speaker, 1)
+
+    def test_transcribe_directory_argv_is_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            model = root / "model.gguf"
+            input_dir.mkdir()
+            model.write_bytes(b"model")
+            calls = []
+
+            def runner(argv, **kwargs):
+                calls.append((tuple(argv), kwargs))
+                return CommandResult(tuple(argv), 0, "", "")
+
+            transcribe_directory(
+                input_dir,
+                output_dir,
+                NemoOptions("nemo-speech", model, "cuda:1"),
+                concurrency=3,
+                runner=runner,
+            )
+
+            self.assertEqual(
+                calls,
+                [
+                    (
+                        (
+                            "nemo-speech",
+                            "transcribe",
+                            str(input_dir),
+                            "--recursive",
+                            "--model",
+                            str(model),
+                            "--format",
+                            "json",
+                            "--word-times",
+                            "--output-dir",
+                            str(output_dir),
+                            "--concurrency",
+                            "3",
+                            "--device",
+                            "cuda:1",
+                        ),
+                        {"check": False},
+                    )
+                ],
+            )
 
     def test_translate_texts_uses_one_structured_batch_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -92,9 +155,26 @@ class NemoAdapterTests(unittest.TestCase):
 
             self.assertEqual(translated, ["English 0", "English 1"])
             self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0][:2], ("nemo-speech", "translate"))
-            self.assertIn("--input", calls[0])
-            self.assertIn("cuda:0", calls[0])
+            normalized_call = list(calls[0])
+            normalized_call[normalized_call.index("--input") + 1] = "<temporary-input>"
+            self.assertEqual(
+                tuple(normalized_call),
+                (
+                    "nemo-speech",
+                    "translate",
+                    "--model",
+                    str(model),
+                    "--from",
+                    "ru",
+                    "--to",
+                    "en",
+                    "--input",
+                    "<temporary-input>",
+                    "--json",
+                    "--device",
+                    "cuda:0",
+                ),
+            )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+usage: speechloom doctor [-h] [--ffmpeg FFMPEG] [--ffprobe FFPROBE]
+                         [--nemo-speech NEMO_SPEECH] [--model MODEL]
+                         [--diar-model DIAR_MODEL]
+                         [--translation-model TRANSLATION_MODEL]
+                         [--source-language SOURCE_LANGUAGE]
+                         [--translate-to TRANSLATE_TO] [--device DEVICE]
+                         [--output-dir OUTPUT_DIR] [--json]
+
+options:
+  -h, --help            show this help message and exit
+  --ffmpeg FFMPEG
+  --ffprobe FFPROBE
+  --nemo-speech NEMO_SPEECH
+  --model MODEL
+  --diar-model DIAR_MODEL
+  --translation-model TRANSLATION_MODEL
+  --source-language SOURCE_LANGUAGE
+                        Spoken language, for example ru
+  --translate-to TRANSLATE_TO
+                        Translate transcript outputs, for example en
+  --device DEVICE       auto, cpu, cuda[:N], metal, vulkan[:N], or gpu[:N]
+  --output-dir OUTPUT_DIR
+  --json                Emit machine-readable diagnostics

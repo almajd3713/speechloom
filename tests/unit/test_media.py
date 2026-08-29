@@ -15,7 +15,10 @@ from speechloom.process import CommandResult
 
 class MediaTests(unittest.TestCase):
     def test_probe_and_select_stream(self) -> None:
+        calls = []
+
         def runner(argv, **kwargs):
+            calls.append(tuple(argv))
             return CommandResult(
                 tuple(argv),
                 0,
@@ -29,6 +32,21 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(info.duration, 12.5)
         self.assertEqual(select_audio_stream(info, 2).codec, "aac")
         self.assertFalse(can_passthrough_wav(Path("lecture.mp4"), info.audio_streams[0]))
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration:stream=index,codec_type,codec_name,sample_rate,channels",
+                    "-of",
+                    "json",
+                    "lecture.mp4",
+                )
+            ],
+        )
 
     def test_normalization_uses_selected_stream_and_atomic_destination(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -51,8 +69,31 @@ class MediaTests(unittest.TestCase):
             )
             normalize_audio(Path("input.mkv"), destination, info.audio_streams[0], runner=runner)
             self.assertTrue(destination.is_file())
-            self.assertIn("0:3", calls[0])
-            self.assertIn("pcm_s16le", calls[0])
+            self.assertEqual(
+                calls,
+                [
+                    (
+                        "ffmpeg",
+                        "-nostdin",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-i",
+                        "input.mkv",
+                        "-map",
+                        "0:3",
+                        "-vn",
+                        "-ac",
+                        "1",
+                        "-ar",
+                        "16000",
+                        "-c:a",
+                        "pcm_s16le",
+                        str(destination.with_name("audio.part.wav")),
+                    )
+                ],
+            )
 
 
 if __name__ == "__main__":

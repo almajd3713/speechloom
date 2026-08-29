@@ -1,0 +1,48 @@
+usage: speechloom transcribe [-h] [--ffmpeg FFMPEG] [--ffprobe FFPROBE]
+                             [--nemo-speech NEMO_SPEECH] [--model MODEL]
+                             [--diar-model DIAR_MODEL]
+                             [--translation-model TRANSLATION_MODEL]
+                             [--source-language SOURCE_LANGUAGE]
+                             [--translate-to TRANSLATE_TO] [--device DEVICE]
+                             [-o DIRECTORY] [--formats FORMATS]
+                             [--audio-stream AUDIO_STREAM] [--recursive]
+                             [--diarize] [--workers WORKERS]
+                             [--shared-model | --no-shared-model]
+                             [--keep-audio] [--force] [--fail-fast]
+                             [--resume | --no-resume] [--json]
+                             inputs [inputs ...]
+
+positional arguments:
+  inputs
+
+options:
+  -h, --help            show this help message and exit
+  --ffmpeg FFMPEG
+  --ffprobe FFPROBE
+  --nemo-speech NEMO_SPEECH
+  --model MODEL
+  --diar-model DIAR_MODEL
+  --translation-model TRANSLATION_MODEL
+  --source-language SOURCE_LANGUAGE
+                        Spoken language, for example ru
+  --translate-to TRANSLATE_TO
+                        Translate transcript outputs, for example en
+  --device DEVICE       auto, cpu, cuda[:N], metal, vulkan[:N], or gpu[:N]
+  -o DIRECTORY, --output-dir DIRECTORY
+                        Write transcription job directories here (default:
+                        transcripts)
+  --formats FORMATS     Comma-separated: json,txt,srt,vtt
+  --audio-stream AUDIO_STREAM
+                        FFmpeg audio stream index
+  --recursive           Recurse into input directories
+  --diarize             Enable integrated Sortformer diarization
+  --workers WORKERS
+  --shared-model        Use one native directory invocation for multi-file
+                        jobs (default)
+  --no-shared-model     Invoke the native runtime separately for each input
+  --keep-audio
+  --force               Recompute and atomically replace job artifacts
+  --fail-fast           Stop scheduling after the first failure
+  --resume
+  --no-resume
+  --json                Emit machine-readable job results

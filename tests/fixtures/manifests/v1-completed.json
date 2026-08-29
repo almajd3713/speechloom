@@ -1,0 +1,69 @@
+{
+  "artifacts": {
+    "json": {"path": "transcript.json", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "size": 1024},
+    "srt": {"path": "subtitles.srt", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "size": 92},
+    "subtitles.en.srt": {"path": "subtitles.en.srt", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "size": 88},
+    "subtitles.en.vtt": {"path": "subtitles.en.vtt", "sha256": "4444444444444444444444444444444444444444444444444444444444444444", "size": 86},
+    "translation.en.json": {"path": "translation.en.json", "sha256": "5555555555555555555555555555555555555555555555555555555555555555", "size": 640},
+    "translation.en.txt": {"path": "translation.en.txt", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "size": 14},
+    "txt": {"path": "transcript.txt", "sha256": "7777777777777777777777777777777777777777777777777777777777777777", "size": 21},
+    "vtt": {"path": "subtitles.vtt", "sha256": "8888888888888888888888888888888888888888888888888888888888888888", "size": 90}
+  },
+  "created_at": "2026-08-20T10:00:00+00:00",
+  "diar_model": null,
+  "job_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "media": {
+    "audio_streams": [{"channels": 2, "codec": "aac", "index": 1, "sample_rate": 48000}],
+    "duration": 3.0,
+    "path": "/fixtures/media/russian.mp4"
+  },
+  "model": {
+    "mtime_ns": 1750000000000000000,
+    "path": "/fixtures/models/parakeet.gguf",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 684000000
+  },
+  "normalized_audio": {"passthrough": false, "path": "/fixtures/jobs/example/.work/audio.wav"},
+  "options": {
+    "audio_stream": null,
+    "device": "cuda:0",
+    "diar_model_sha256": null,
+    "diarize": false,
+    "ffmpeg_version": "ffmpeg fixture-1.0",
+    "model_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "nemo_speech_version": "nemo-speech fixture-1.0",
+    "pipeline_version": "0.1.0",
+    "requested_formats": ["json", "txt", "srt", "vtt"],
+    "transcript_schema": 1
+  },
+  "schema_version": 1,
+  "selected_audio_stream": {"channels": 2, "codec": "aac", "index": 1, "sample_rate": 48000},
+  "source": {
+    "mtime_ns": 1750000000000000001,
+    "path": "/fixtures/media/russian.mp4",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "size": 2048
+  },
+  "state": "completed",
+  "state_detail": "completed",
+  "timings": {"inference_seconds": 1.5, "normalization_seconds": 0.2, "total_seconds": 2.1, "translation_batch_seconds": 0.4},
+  "tools": {"ffmpeg": "ffmpeg fixture-1.0", "ffprobe": "ffprobe fixture-1.0", "nemo_speech": "nemo-speech fixture-1.0"},
+  "translation": {
+    "model": {
+      "mtime_ns": 1750000000000000002,
+      "path": "/fixtures/models/translate.gguf",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "size": 4200000000
+    },
+    "source_language": "ru",
+    "target_language": "en"
+  },
+  "translation_model": {
+    "mtime_ns": 1750000000000000002,
+    "path": "/fixtures/models/translate.gguf",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "size": 4200000000
+  },
+  "updated_at": "2026-08-20T10:00:02+00:00",
+  "warnings": []
+}
