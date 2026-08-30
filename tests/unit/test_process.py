@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from speechloom import CancellationController
 from speechloom.errors import CancellationError, PipelineError
@@ -16,13 +17,17 @@ from speechloom.process import run_command
 def _process_is_running(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
     fields = stat.split()
     return len(fields) > 2 and fields[2] != "Z"
 
 
 class ManagedProcessTests(unittest.TestCase):
+    def test_process_probe_tolerates_proc_entry_disappearing(self) -> None:
+        with patch.object(Path, "read_text", side_effect=ProcessLookupError):
+            self.assertFalse(_process_is_running(12345))
+
     def test_streams_both_outputs_and_bounds_retained_diagnostics(self) -> None:
         streamed: list[tuple[str, str]] = []
 
