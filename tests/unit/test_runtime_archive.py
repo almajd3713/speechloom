@@ -49,10 +49,55 @@ class RuntimeArchiveTests(unittest.TestCase):
             )
             (external / "libcudart.so.12").symlink_to(real_library.name)
             (external / "libcudart.so").symlink_to(real_library.name)
+            cublas_lt_source = root / "cublas_lt.c"
+            cublas_lt_source.write_text(
+                "int fixture_cublas_lt(void) { return 0; }\n", encoding="utf-8"
+            )
+            cublas_lt_library = external / "libcublasLt.so.12.6.0"
+            run_command(
+                [
+                    "gcc",
+                    "-shared",
+                    "-fPIC",
+                    str(cublas_lt_source),
+                    "-Wl,-soname,libcublasLt.so.12",
+                    "-o",
+                    str(cublas_lt_library),
+                ]
+            )
+            (external / "libcublasLt.so.12").symlink_to(cublas_lt_library.name)
+            (external / "libcublasLt.so").symlink_to(cublas_lt_library.name)
+            cublas_source = root / "cublas.c"
+            cublas_source.write_text(
+                "extern int fixture_cublas_lt(void);\n"
+                "int fixture_cublas(void) { return fixture_cublas_lt(); }\n",
+                encoding="utf-8",
+            )
+            cublas_library = external / "libcublas.so.12.6.0"
+            run_command(
+                [
+                    "gcc",
+                    "-shared",
+                    "-fPIC",
+                    str(cublas_source),
+                    f"-L{external}",
+                    "-Wl,--no-as-needed",
+                    "-lcublasLt",
+                    f"-Wl,-rpath,{external}",
+                    "-Wl,-soname,libcublas.so.12",
+                    "-o",
+                    str(cublas_library),
+                ]
+            )
+            (external / "libcublas.so.12").symlink_to(cublas_library.name)
+            (external / "libcublas.so").symlink_to(cublas_library.name)
             executable_source = root / "main.c"
             executable_source.write_text(
-                '#include <stdio.h>\nextern int fixture_cuda(void);\n'
-                'int main(void) { puts("fixture CUDA runtime"); return fixture_cuda(); }\n',
+                "#include <stdio.h>\n"
+                "extern int fixture_cuda(void);\n"
+                "extern int fixture_cublas(void);\n"
+                'int main(void) { puts("fixture CUDA runtime"); '
+                "return fixture_cuda() + fixture_cublas(); }\n",
                 encoding="utf-8",
             )
             executable = prefix / "bin/nemo-speech"
@@ -64,6 +109,7 @@ class RuntimeArchiveTests(unittest.TestCase):
                     f"-L{external}",
                     "-Wl,--no-as-needed",
                     "-lcudart",
+                    "-lcublas",
                     f"-Wl,-rpath,{external}",
                     "-o",
                     str(executable),
@@ -118,11 +164,18 @@ class RuntimeArchiveTests(unittest.TestCase):
                 env={"LD_LIBRARY_PATH": str(prefix / "lib")},
             )
             self.assertIn(str(prefix / "lib/libcudart.so.12"), linked.stdout)
+            self.assertIn(str(prefix / "lib/libcublas.so.12"), linked.stdout)
+            self.assertIn(str(prefix / "lib/libcublasLt.so.12"), linked.stdout)
             symbols = run_command(["nm", "-D", str(prefix / "lib/libcudart.so.12")])
             self.assertIn("fixture_cuda", symbols.stdout)
+            cublas_lt_symbols = run_command(
+                ["nm", "-D", str(prefix / "lib/libcublasLt.so.12")]
+            )
+            self.assertIn("fixture_cublas_lt", cublas_lt_symbols.stdout)
             launched = run_command([str(executable), "--version"])
             self.assertIn("fixture CUDA runtime", launched.stdout)
             self.assertTrue((prefix / "lib/libcudart.so.12").is_symlink())
+            self.assertTrue((prefix / "lib/libcublasLt.so.12").is_symlink())
             self.assertTrue(
                 (prefix / "share/licenses/cuda/NGC-DL-CONTAINER-LICENSE").is_file()
             )

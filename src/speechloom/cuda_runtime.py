@@ -13,6 +13,7 @@ from .errors import SetupError
 
 CUDA_REDISTRIBUTABLE_PREFIXES = (
     "libcublas",
+    "libcublasLt",
     "libcudart",
     "libcufft",
     "libcurand",
