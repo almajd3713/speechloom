@@ -48,9 +48,9 @@ jobs:
           "$RUNNER_TEMP/speechloom-smoke-venv/bin/python" -m pip install dist/*.whl
       - name: Run managed CPU setup twice
         env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/speechloom-smoke/config
-          XDG_DATA_HOME: ${{ runner.temp }}/speechloom-smoke/data
-          XDG_CACHE_HOME: ${{ runner.temp }}/speechloom-smoke/cache
+          SPEECHLOOM_CONFIG_HOME: ${{ runner.temp }}/speechloom-smoke/config
+          SPEECHLOOM_DATA_HOME: ${{ runner.temp }}/speechloom-smoke/data
+          SPEECHLOOM_CACHE_HOME: ${{ runner.temp }}/speechloom-smoke/cache
           SPEECHLOOM_FEATURES: ${{ inputs.features }}
           SPEECHLOOM_FROM_SOURCE: ${{ inputs.from_source }}
         run: |
@@ -89,9 +89,9 @@ jobs:
           "$RUNNER_TEMP/speechloom-smoke-venv/bin/python" -m pip install dist/*.whl
       - name: Run managed CUDA setup twice
         env:
-          XDG_CONFIG_HOME: ${{ runner.temp }}/speechloom-smoke/config
-          XDG_DATA_HOME: ${{ runner.temp }}/speechloom-smoke/data
-          XDG_CACHE_HOME: ${{ runner.temp }}/speechloom-smoke/cache
+          SPEECHLOOM_CONFIG_HOME: ${{ runner.temp }}/speechloom-smoke/config
+          SPEECHLOOM_DATA_HOME: ${{ runner.temp }}/speechloom-smoke/data
+          SPEECHLOOM_CACHE_HOME: ${{ runner.temp }}/speechloom-smoke/cache
           SPEECHLOOM_FEATURES: ${{ inputs.features }}
           SPEECHLOOM_FROM_SOURCE: ${{ inputs.from_source }}
         run: |

@@ -118,7 +118,7 @@ def _terminate_process_group(
             os.killpg(group_id, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    else:  # pragma: no cover - the supported runtime is Linux/WSL
+    else:  # pragma: no cover - exercised on non-POSIX platforms
         if process.poll() is not None:
             return
         process.terminate()

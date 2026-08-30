@@ -80,9 +80,9 @@ def _registry(asr_content: bytes, diar_content: bytes = b"diar") -> Registry:
 def _paths(root: Path) -> AppPaths:
     return AppPaths.from_environment(
         {
-            "XDG_CONFIG_HOME": str(root / "config"),
-            "XDG_DATA_HOME": str(root / "data"),
-            "XDG_CACHE_HOME": str(root / "cache"),
+            "SPEECHLOOM_CONFIG_HOME": str(root / "config"),
+            "SPEECHLOOM_DATA_HOME": str(root / "data"),
+            "SPEECHLOOM_CACHE_HOME": str(root / "cache"),
         },
         home=root,
     )

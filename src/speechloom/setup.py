@@ -784,12 +784,10 @@ class SetupManager:
         )
 
     def _platform_details(self) -> dict[str, object]:
-        release = platform.release()
         return {
             "system": platform.system(),
             "machine": platform.machine(),
-            "release": release,
-            "wsl": bool(os.environ.get("WSL_DISTRO_NAME") or "microsoft" in release.lower()),
+            "release": platform.release(),
             "gpu_visible": self._gpu_usable(),
         }
 

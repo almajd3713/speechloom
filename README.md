@@ -8,15 +8,17 @@ Local audio and video transcription using
 
 - Python 3.10+
 - FFmpeg and FFprobe
-- Git, a C++17 compiler, Ninja, and CMake 3.26–3.x
-- CUDA and `nvcc` for GPU builds
+- A supported native runtime profile for managed setup
+- Git, a C++17 compiler, Ninja, and CMake 3.26–3.x only for source builds
+- CUDA and `nvcc` only for CUDA source builds
 
 ## Setup
 
-Install the Python package:
+Install the Python package from PyPI:
 
 ```bash
-python3 -m pip install --user -e .
+pipx install speechloom
+# or: python3 -m pip install speechloom
 ```
 
 Install the runtime and ASR model:
@@ -25,8 +27,8 @@ Install the runtime and ASR model:
 speechloom setup
 ```
 
-Speechloom selects CUDA when both the WSL GPU and CUDA compiler are available.
-You can select a backend explicitly:
+Speechloom selects a usable backend from the capabilities available on the host.
+You can also select one explicitly:
 
 ```bash
 speechloom setup --backend cuda
@@ -49,10 +51,12 @@ speechloom transcribe meeting.mp4 --diarize
 Multiple optional features can be selected with
 `--features translation,diarization`.
 
-Setup writes configuration under `~/.config/speechloom` and managed assets
-under `~/.local/share/speechloom`. It respects the standard XDG environment
-variables. Existing repository-local `.runtime` assets are imported in place;
-they are not moved or deleted.
+Setup uses the platform's standard per-user configuration, data, and cache
+directories. Existing repository-local `.runtime` assets are imported in
+place; they are not moved or deleted.
+
+Portable installations can set `SPEECHLOOM_CONFIG_HOME`,
+`SPEECHLOOM_DATA_HOME`, and `SPEECHLOOM_CACHE_HOME` explicitly.
 
 Check setup state or remove setup caches with:
 
@@ -124,8 +128,9 @@ Settings are read in this order:
 3. the selected INI file
 4. defaults
 
-The default file is `~/.config/speechloom/config.ini`. `--config` still selects
-an explicit file. See `config.example.ini` for available settings.
+The default file is in the platform's standard user configuration directory.
+`--config` still selects an explicit file. See `config.example.ini` for
+available settings.
 
 ## Tests
 

@@ -18,6 +18,21 @@ from speechloom.runtime import (
 
 
 class AppPathsTests(unittest.TestCase):
+    def test_speechloom_roots_override_platform_defaults(self) -> None:
+        paths = AppPaths.from_environment(
+            {
+                "SPEECHLOOM_CONFIG_HOME": "/portable/config",
+                "SPEECHLOOM_DATA_HOME": "/portable/data",
+                "SPEECHLOOM_CACHE_HOME": "/portable/cache",
+            },
+            home=Path("/ignored"),
+            platform="win32",
+        )
+
+        self.assertEqual(paths.config_file, Path("/portable/config/config.ini"))
+        self.assertEqual(paths.runtime_dir, Path("/portable/data/runtime"))
+        self.assertEqual(paths.downloads_dir, Path("/portable/cache/downloads"))
+
     def test_respects_all_xdg_roots(self) -> None:
         paths = AppPaths.from_environment(
             {
@@ -35,11 +50,54 @@ class AppPathsTests(unittest.TestCase):
         self.assertEqual(paths.downloads_dir, Path("/xdg/cache/speechloom/downloads"))
 
     def test_uses_standard_linux_defaults(self) -> None:
-        paths = AppPaths.from_environment({}, home=Path("/home/example"))
+        paths = AppPaths.from_environment(
+            {}, home=Path("/home/example"), platform="linux"
+        )
 
         self.assertEqual(paths.config_file, Path("/home/example/.config/speechloom/config.ini"))
         self.assertEqual(paths.data_dir, Path("/home/example/.local/share/speechloom"))
         self.assertEqual(paths.cache_dir, Path("/home/example/.cache/speechloom"))
+
+    def test_uses_native_windows_roots(self) -> None:
+        paths = AppPaths.from_environment(
+            {
+                "APPDATA": "C:/Users/example/AppData/Roaming",
+                "LOCALAPPDATA": "C:/Users/example/AppData/Local",
+            },
+            home=Path("C:/Users/example"),
+            platform="win32",
+        )
+
+        self.assertEqual(
+            paths.config_file,
+            Path("C:/Users/example/AppData/Roaming/speechloom/config.ini"),
+        )
+        self.assertEqual(
+            paths.data_dir,
+            Path("C:/Users/example/AppData/Local/speechloom"),
+        )
+        self.assertEqual(
+            paths.cache_dir,
+            Path("C:/Users/example/AppData/Local/speechloom/Cache"),
+        )
+
+    def test_uses_native_macos_roots(self) -> None:
+        paths = AppPaths.from_environment(
+            {}, home=Path("/Users/example"), platform="darwin"
+        )
+
+        self.assertEqual(
+            paths.config_file,
+            Path("/Users/example/Library/Preferences/speechloom/config.ini"),
+        )
+        self.assertEqual(
+            paths.data_dir,
+            Path("/Users/example/Library/Application Support/speechloom"),
+        )
+        self.assertEqual(
+            paths.cache_dir,
+            Path("/Users/example/Library/Caches/speechloom"),
+        )
 
 
 class InstallStateTests(unittest.TestCase):

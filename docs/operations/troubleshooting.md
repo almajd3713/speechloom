@@ -6,7 +6,7 @@ Install CMake 3.26+, Ninja, and a C++17 compiler, then run `scripts/bootstrap_ru
 
 ## CUDA is requested but GPU initialization fails
 
-Run `nvidia-smi` inside WSL. If it fails, update or repair the Windows-side NVIDIA driver with WSL CUDA support, shut WSL down from Windows, restart it, and test again. Do not install a Linux display driver inside WSL.
+Run `nvidia-smi` in the environment where Speechloom will run. If it fails, install or update the NVIDIA driver using the vendor instructions for that host, then test again.
 
 Until both `nvidia-smi` and `nemo-speech doctor --json` report a usable CUDA device, configure `device = cpu` and build the CPU runtime.
 

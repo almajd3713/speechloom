@@ -36,10 +36,7 @@ class Settings:
 
 
 def default_config_path(env: Mapping[str, str] | None = None) -> Path:
-    environ = env if env is not None else os.environ
-    config_home = environ.get("XDG_CONFIG_HOME")
-    root = Path(config_home) if config_home else Path.home() / ".config"
-    return root / "speechloom" / "config.ini"
+    return AppPaths.from_environment(env).config_file
 
 
 def load_settings(

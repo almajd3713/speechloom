@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any, Mapping
 
 from . import __version__
@@ -35,15 +36,15 @@ class AppPaths:
         env: Mapping[str, str] | None = None,
         *,
         home: Path | None = None,
+        platform: str | None = None,
     ) -> "AppPaths":
         environ = env if env is not None else os.environ
         home_dir = home if home is not None else Path.home()
-        config_root = Path(environ.get("XDG_CONFIG_HOME", home_dir / ".config"))
-        data_root = Path(environ.get("XDG_DATA_HOME", home_dir / ".local/share"))
-        cache_root = Path(environ.get("XDG_CACHE_HOME", home_dir / ".cache"))
-        config_dir = config_root / "speechloom"
-        data_dir = data_root / "speechloom"
-        cache_dir = cache_root / "speechloom"
+        config_dir, data_dir, cache_dir = _platform_directories(
+            environ,
+            home_dir,
+            platform or sys.platform,
+        )
         return cls(
             config_dir=config_dir,
             config_file=config_dir / "config.ini",
@@ -67,6 +68,39 @@ class AppPaths:
             self.build_tools_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+
+
+def _platform_directories(
+    environ: Mapping[str, str],
+    home: Path,
+    platform: str,
+) -> tuple[Path, Path, Path]:
+    if platform == "win32":
+        roaming = Path(environ.get("APPDATA", home / "AppData/Roaming"))
+        local = Path(environ.get("LOCALAPPDATA", home / "AppData/Local"))
+        defaults = (
+            roaming / "speechloom",
+            local / "speechloom",
+            local / "speechloom/Cache",
+        )
+    elif platform == "darwin":
+        library = home / "Library"
+        defaults = (
+            library / "Preferences/speechloom",
+            library / "Application Support/speechloom",
+            library / "Caches/speechloom",
+        )
+    else:
+        defaults = (
+            Path(environ.get("XDG_CONFIG_HOME", home / ".config")) / "speechloom",
+            Path(environ.get("XDG_DATA_HOME", home / ".local/share")) / "speechloom",
+            Path(environ.get("XDG_CACHE_HOME", home / ".cache")) / "speechloom",
+        )
+    return (
+        Path(environ.get("SPEECHLOOM_CONFIG_HOME", defaults[0])),
+        Path(environ.get("SPEECHLOOM_DATA_HOME", defaults[1])),
+        Path(environ.get("SPEECHLOOM_CACHE_HOME", defaults[2])),
+    )
 
 
 @dataclass(frozen=True)

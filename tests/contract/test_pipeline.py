@@ -76,7 +76,7 @@ class FakeTools:
 
 
 class PipelineContractTests(unittest.TestCase):
-    def test_unicode_and_wsl_mount_style_paths_are_preserved(self) -> None:
+    def test_unicode_and_mounted_drive_style_paths_are_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "mnt/d/russian stuff/русский ролик.mp4"

@@ -108,9 +108,9 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             env = {
-                "XDG_CONFIG_HOME": str(root / "config"),
-                "XDG_DATA_HOME": str(root / "data"),
-                "XDG_CACHE_HOME": str(root / "cache"),
+                "SPEECHLOOM_CONFIG_HOME": str(root / "config/speechloom"),
+                "SPEECHLOOM_DATA_HOME": str(root / "data/speechloom"),
+                "SPEECHLOOM_CACHE_HOME": str(root / "cache/speechloom"),
             }
             state_path = root / "data/speechloom/install.json"
             save_install_state(
@@ -153,9 +153,9 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             env = {
-                "XDG_CONFIG_HOME": str(root / "config"),
-                "XDG_DATA_HOME": str(root / "data"),
-                "XDG_CACHE_HOME": str(root / "cache"),
+                "SPEECHLOOM_CONFIG_HOME": str(root / "config/speechloom"),
+                "SPEECHLOOM_DATA_HOME": str(root / "data/speechloom"),
+                "SPEECHLOOM_CACHE_HOME": str(root / "cache/speechloom"),
             }
             state_path = root / "data/speechloom/install.json"
             state_path.parent.mkdir(parents=True)
