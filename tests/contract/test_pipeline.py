@@ -76,6 +76,30 @@ class FakeTools:
 
 
 class PipelineContractTests(unittest.TestCase):
+    def test_unicode_and_wsl_mount_style_paths_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "mnt/d/russian stuff/русский ролик.mp4"
+            output = root / "mnt/d/russian stuff/готовые субтитры"
+            model = root / "модели/parakeet.gguf"
+            source.parent.mkdir(parents=True)
+            model.parent.mkdir(parents=True)
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            tools = FakeTools()
+
+            result = Pipeline(
+                PipelineOptions(output_dir=output, model=model), runner=tools
+            ).run([source])[0]
+
+            self.assertIsNone(result.error)
+            probe_call = next(
+                call for call in tools.calls if call[0] == "ffprobe" and call[1:] != ("-version",)
+            )
+            self.assertIn(str(source), probe_call)
+            self.assertTrue(Path(result.job_dir).is_relative_to(output))
+            self.assertEqual(inspect_job(Path(result.job_dir))["source"]["path"], str(source))
+
     def test_inference_gate_does_not_serialize_media_preparation(self) -> None:
         class TrackingGate:
             def __init__(self) -> None:
@@ -330,6 +354,32 @@ class PipelineContractTests(unittest.TestCase):
             manifest = inspect_job(Path(result.job_dir))
             self.assertEqual(manifest["state"], "failed")
             self.assertIn("FFprobe", manifest["error"]["message"])
+
+    def test_future_manifest_schema_is_not_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "parakeet.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            tools = FakeTools()
+            options = PipelineOptions(output_dir=root / "out", model=model)
+
+            first = Pipeline(options, runner=tools).run([source])[0]
+            job = Path(first.job_dir)
+            manifest_path = job / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 999
+            future_manifest = json.dumps(manifest, ensure_ascii=False, sort_keys=True)
+            manifest_path.write_text(future_manifest, encoding="utf-8")
+            transcript_before = (job / "transcript.json").read_bytes()
+
+            second = Pipeline(options, runner=tools).run([source])[0]
+
+            self.assertIn("Unsupported manifest version", second.error or "")
+            self.assertEqual(manifest_path.read_text(encoding="utf-8"), future_manifest)
+            self.assertEqual((job / "transcript.json").read_bytes(), transcript_before)
+            self.assertEqual(tools.inference_calls, 1)
 
 
 

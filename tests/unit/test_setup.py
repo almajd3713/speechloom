@@ -5,12 +5,13 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from speechloom import CancellationController, StageEvent
 from speechloom.doctor import DoctorReport
-from speechloom.errors import CancellationError
+from speechloom.errors import CancellationError, SetupError
 from speechloom.process import CommandResult
 from speechloom.process import run_command
 from speechloom.registry import Registry, RuntimeArchiveSpec
@@ -200,6 +201,43 @@ class SetupManagerTests(unittest.TestCase):
             )
             self.assertFalse((manager.paths.downloads_dir / filename).exists())
 
+    def test_low_disk_space_stops_before_runtime_or_model_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = _paths(root)
+            paths.create()
+            installer = FakeInstaller(b"asr")
+            registry = _registry(b"asr")
+            manager = SetupManager(
+                paths=paths,
+                registry=registry,
+                runner=installer,
+                repository_root=root / "repo",
+            )
+            archive = RuntimeArchiveSpec(
+                backend="cpu",
+                system="linux",
+                architecture="x86_64",
+                filename="runtime.tar.gz",
+                url="https://example.invalid/runtime.tar.gz",
+                sha256="a" * 64,
+                features=("asr",),
+                minimum_free_bytes=11,
+            )
+
+            with patch(
+                "speechloom.setup.shutil.disk_usage",
+                return_value=SimpleNamespace(free=10),
+            ):
+                with self.assertRaisesRegex(SetupError, "Not enough free space"):
+                    manager._install_runtime_archive(archive)
+                with self.assertRaisesRegex(SetupError, "Not enough free space"):
+                    manager._install_model(
+                        replace(registry.model("asr"), minimum_free_bytes=11)
+                    )
+
+            self.assertFalse(any(call[0] == "bash" for call in installer.calls))
+
     def test_setup_emits_structured_stage_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -385,6 +423,55 @@ class DownloadArtifactScriptTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertFalse((destination / "fixture.gguf").exists())
             self.assertFalse((cache / "fixture.gguf.part").exists())
+
+    def test_preserves_partial_download_after_network_interruption(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = \"--output\" ]; then output=$2; shift 2; else shift; fi\n"
+                "done\n"
+                "printf partial-download > \"$output\"\n"
+                "exit 18\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            script = Path(__file__).resolve().parents[2] / "scripts/download_artifact.sh"
+            destination = root / "models"
+            cache = root / "cache"
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+            }
+
+            interrupted = run_command(
+                [
+                    "bash",
+                    str(script),
+                    "--destination",
+                    str(destination),
+                    "--download-cache",
+                    str(cache),
+                    "--url",
+                    "https://models.example/fixture.gguf",
+                    "--filename",
+                    "fixture.gguf",
+                    "--sha256",
+                    "0" * 64,
+                ],
+                env=environment,
+                check=False,
+            )
+
+            self.assertNotEqual(interrupted.returncode, 0)
+            self.assertFalse((destination / "fixture.gguf").exists())
+            self.assertEqual(
+                (cache / "fixture.gguf.part").read_bytes(), b"partial-download"
+            )
 
 
 if __name__ == "__main__":

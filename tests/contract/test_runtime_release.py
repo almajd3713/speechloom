@@ -42,6 +42,21 @@ class RuntimeReleaseContractTests(unittest.TestCase):
         self.assertIn("--skip-gpu-check", result.stdout)
         self.assertIn("--skip-runtime-check", result.stdout)
 
+    def test_managed_setup_smoke_uses_an_installed_wheel(self) -> None:
+        workflow = (PROJECT_ROOT / ".github/workflows/setup-smoke.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("python -m build --wheel", workflow)
+        self.assertEqual(workflow.count("speechloom-smoke-venv/bin/speechloom"), 8)
+        self.assertIn("cd \"$RUNNER_TEMP\"", workflow)
+        self.assertIn("setup status --json", workflow)
+        self.assertIn("doctor --json", workflow)
+        self.assertIn("runs-on: ubuntu-22.04", workflow)
+        self.assertIn("runs-on: [self-hosted, Linux, X64, speechloom-cuda]", workflow)
+        self.assertIn("nvidia-smi", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

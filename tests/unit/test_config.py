@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -147,6 +148,34 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(overridden.nemo_speech, "/custom/nemo-speech")
         self.assertEqual(overridden.model, "/custom/asr.gguf")
         self.assertEqual(overridden.device, "cpu")
+
+    def test_explicit_configuration_is_a_rollback_path_for_future_install_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_CACHE_HOME": str(root / "cache"),
+            }
+            state_path = root / "data/speechloom/install.json"
+            state_path.parent.mkdir(parents=True)
+            payload = {"schema_version": 999, "backend": "cuda"}
+            original = json.dumps(payload, sort_keys=True)
+            state_path.write_text(original, encoding="utf-8")
+
+            settings = load_managed_settings(
+                env=env,
+                cli_values={
+                    "nemo_speech": "/portable/nemo-speech",
+                    "model": "/portable/parakeet.gguf",
+                    "device": "cpu",
+                },
+            )
+
+            self.assertEqual(settings.nemo_speech, "/portable/nemo-speech")
+            self.assertEqual(settings.model, "/portable/parakeet.gguf")
+            self.assertEqual(settings.device, "cpu")
+            self.assertEqual(state_path.read_text(encoding="utf-8"), original)
 
 
 if __name__ == "__main__":

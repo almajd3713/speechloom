@@ -1,0 +1,105 @@
+name: Managed setup smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: Backend to install and diagnose
+        required: true
+        default: cpu
+        type: choice
+        options:
+          - cpu
+          - cuda
+      features:
+        description: Optional comma-separated setup features
+        required: false
+        default: ""
+        type: string
+      from_source:
+        description: Force the pinned source-build fallback
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  cpu:
+    if: inputs.backend == 'cpu'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install clean-machine prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ca-certificates curl ffmpeg git ninja-build python3-venv
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Build and install the wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          python -m venv "$RUNNER_TEMP/speechloom-smoke-venv"
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/python" -m pip install dist/*.whl
+      - name: Run managed CPU setup twice
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/speechloom-smoke/config
+          XDG_DATA_HOME: ${{ runner.temp }}/speechloom-smoke/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/speechloom-smoke/cache
+          SPEECHLOOM_FEATURES: ${{ inputs.features }}
+          SPEECHLOOM_FROM_SOURCE: ${{ inputs.from_source }}
+        run: |
+          cd "$RUNNER_TEMP"
+          setup_args=(--backend cpu --json)
+          if [[ -n "$SPEECHLOOM_FEATURES" ]]; then setup_args+=(--features "$SPEECHLOOM_FEATURES"); fi
+          if [[ "$SPEECHLOOM_FROM_SOURCE" == "true" ]]; then setup_args+=(--from-source); fi
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" setup "${setup_args[@]}"
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" setup "${setup_args[@]}"
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" setup status --json
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" doctor --json
+
+  cuda:
+    if: inputs.backend == 'cuda'
+    runs-on: [self-hosted, Linux, X64, speechloom-cuda]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify CUDA host
+        run: |
+          nvidia-smi
+          if [[ "${{ inputs.from_source }}" == "true" ]]; then nvcc --version; fi
+      - name: Install clean-machine prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ca-certificates curl ffmpeg git ninja-build python3-venv
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - name: Build and install the wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          python -m venv "$RUNNER_TEMP/speechloom-smoke-venv"
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/python" -m pip install dist/*.whl
+      - name: Run managed CUDA setup twice
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/speechloom-smoke/config
+          XDG_DATA_HOME: ${{ runner.temp }}/speechloom-smoke/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/speechloom-smoke/cache
+          SPEECHLOOM_FEATURES: ${{ inputs.features }}
+          SPEECHLOOM_FROM_SOURCE: ${{ inputs.from_source }}
+        run: |
+          cd "$RUNNER_TEMP"
+          setup_args=(--backend cuda --json)
+          if [[ -n "$SPEECHLOOM_FEATURES" ]]; then setup_args+=(--features "$SPEECHLOOM_FEATURES"); fi
+          if [[ "$SPEECHLOOM_FROM_SOURCE" == "true" ]]; then setup_args+=(--from-source); fi
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" setup "${setup_args[@]}"
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" setup "${setup_args[@]}"
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" setup status --json
+          "$RUNNER_TEMP/speechloom-smoke-venv/bin/speechloom" doctor --json
