@@ -7,12 +7,13 @@ runtime_url="https://github.com/NVIDIA/NeMo-Speech.cpp.git"
 backend="cpu"
 with_nmt="OFF"
 skip_gpu_check="false"
+skip_runtime_check="false"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 install_prefix="${project_root}/.runtime/nemo-speech"
 tools_prefix="${project_root}/.runtime/tools"
 
 usage() {
-    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--tools-prefix DIRECTORY] [--with-nmt] [--skip-gpu-check]"
+    echo "Usage: $0 [--backend cpu|cuda|vulkan] [--prefix DIRECTORY] [--tools-prefix DIRECTORY] [--with-nmt] [--skip-gpu-check] [--skip-runtime-check]"
     echo "Relative prefixes are resolved from the repository root."
 }
 
@@ -39,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-gpu-check)
             skip_gpu_check="true"
+            shift
+            ;;
+        --skip-runtime-check)
+            skip_runtime_check="true"
             shift
             ;;
         -h|--help)
@@ -124,7 +129,11 @@ echo "Building ${preset}..."
     cmake --install "build/${preset}" --prefix "$install_prefix"
 )
 
-"${install_prefix}/bin/nemo-speech" --version
+if [[ "$skip_runtime_check" == "true" ]]; then
+    echo "Skipping the installed runtime smoke test."
+else
+    "${install_prefix}/bin/nemo-speech" --version
+fi
 echo
 echo "Runtime installed at: ${install_prefix}"
 echo "Configure nemo_speech = ${install_prefix}/bin/nemo-speech"

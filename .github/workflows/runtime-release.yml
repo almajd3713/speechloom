@@ -68,7 +68,8 @@ jobs:
             --prefix .runtime/release-cuda \
             --tools-prefix .runtime/tools \
             --with-nmt \
-            --skip-gpu-check
+            --skip-gpu-check \
+            --skip-runtime-check
       - name: Package CUDA runtime
         run: |
           python3 scripts/package_runtime.py \

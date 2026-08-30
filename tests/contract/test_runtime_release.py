@@ -22,6 +22,7 @@ class RuntimeReleaseContractTests(unittest.TestCase):
         self.assertIn("--backend cuda", workflow)
         self.assertIn("--with-nmt", workflow)
         self.assertIn("--skip-gpu-check", workflow)
+        self.assertIn("--skip-runtime-check", workflow)
         self.assertIn("scripts/package_runtime.py", workflow)
         self.assertIn("scripts/update_runtime_registry.py", workflow)
         self.assertIn("scripts/verify_runtime_archive.py", workflow)
@@ -33,12 +34,13 @@ class RuntimeReleaseContractTests(unittest.TestCase):
         self.assertIn("Open registry promotion pull request", workflow)
         self.assertIn("gh pr create", workflow)
 
-    def test_cuda_gpu_probe_bypass_is_an_explicit_build_option(self) -> None:
+    def test_cuda_hardware_checks_can_be_bypassed_explicitly_for_builds(self) -> None:
         result = run_command(
             ["bash", str(PROJECT_ROOT / "scripts/bootstrap_runtime.sh"), "--help"]
         )
 
         self.assertIn("--skip-gpu-check", result.stdout)
+        self.assertIn("--skip-runtime-check", result.stdout)
 
 
 if __name__ == "__main__":
