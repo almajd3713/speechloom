@@ -1,0 +1,95 @@
+name: Python package
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install -e ".[api,test]"
+      - name: Run unit and contract tests
+        run: python -m unittest discover -s tests -v
+
+  distribution:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install packaging tools
+        run: python -m pip install build twine
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Inspect distribution contents and metadata
+        run: |
+          python scripts/validate_distribution.py dist/* \
+            --checksums dist-checksums/SHA256SUMS
+          python -m twine check dist/*
+      - name: Verify the core wheel in isolation
+        env:
+          XDG_CONFIG_HOME: /tmp/speechloom-core-state/config
+          XDG_DATA_HOME: /tmp/speechloom-core-state/data
+          XDG_CACHE_HOME: /tmp/speechloom-core-state/cache
+        run: |
+          python -m venv /tmp/speechloom-core
+          /tmp/speechloom-core/bin/python -m pip install --no-index --no-deps dist/*.whl
+          PIP_NO_INDEX=1 /tmp/speechloom-core/bin/python \
+            scripts/verify_offline_import.py speechloom
+          PIP_NO_INDEX=1 /tmp/speechloom-core/bin/python -c \
+            "import importlib.util; assert importlib.util.find_spec('fastapi') is None"
+          PIP_NO_INDEX=1 /tmp/speechloom-core/bin/speechloom --help
+          PIP_NO_INDEX=1 /tmp/speechloom-core/bin/python -m speechloom --help
+          test ! -e /tmp/speechloom-core-state
+      - name: Verify the source distribution in isolation
+        env:
+          XDG_CONFIG_HOME: /tmp/speechloom-sdist-state/config
+          XDG_DATA_HOME: /tmp/speechloom-sdist-state/data
+          XDG_CACHE_HOME: /tmp/speechloom-sdist-state/cache
+        run: |
+          python -m venv /tmp/speechloom-sdist
+          /tmp/speechloom-sdist/bin/python -m pip install --no-deps dist/*.tar.gz
+          PIP_NO_INDEX=1 /tmp/speechloom-sdist/bin/python \
+            scripts/verify_offline_import.py speechloom
+          PIP_NO_INDEX=1 /tmp/speechloom-sdist/bin/speechloom --help
+          test ! -e /tmp/speechloom-sdist-state
+      - name: Verify the API extra in isolation
+        env:
+          XDG_CONFIG_HOME: /tmp/speechloom-api-state/config
+          XDG_DATA_HOME: /tmp/speechloom-api-state/data
+          XDG_CACHE_HOME: /tmp/speechloom-api-state/cache
+        run: |
+          python -m venv /tmp/speechloom-api
+          /tmp/speechloom-api/bin/python -m pip install "$(find dist -name '*.whl')[api]"
+          PIP_NO_INDEX=1 /tmp/speechloom-api/bin/python \
+            scripts/verify_offline_import.py speechloom speechloom.api fastapi
+          PIP_NO_INDEX=1 /tmp/speechloom-api/bin/speechloom serve --help
+          test ! -e /tmp/speechloom-api-state
+      - uses: actions/upload-artifact@v5
+        with:
+          name: python-package-distributions
+          path: |
+            dist/*
+            dist-checksums/SHA256SUMS
+          if-no-files-found: error

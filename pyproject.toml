@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,9 +8,26 @@ version = "0.1.0"
 description = "Reliable local audio and video transcription with NeMo-Speech.cpp"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Speechloom contributors" }]
 dependencies = []
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/almajd3713/speechloom"
+Issues = "https://github.com/almajd3713/speechloom/issues"
 
 [project.optional-dependencies]
 api = [
@@ -28,7 +45,7 @@ speechloom = "speechloom.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-speechloom = ["data/*.json"]
+speechloom = ["data/*.json", "py.typed"]
 
 [tool.setuptools.data-files]
 "share/speechloom/scripts" = ["scripts/*.sh"]
