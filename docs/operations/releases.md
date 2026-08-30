@@ -58,14 +58,14 @@ fall back to a local source build.
 
 ## Prepare the Python package
 
-Update the same package version in both:
-
-- `pyproject.toml` under `project.version`;
-- `src/speechloom/__init__.py` under `__version__`.
-
-For example, prepare version `0.1.1`:
+Use the version helper to inspect the current version and update `pyproject.toml` and
+`src/speechloom/__init__.py` together. For example, prepare version `0.1.1`:
 
 ```bash
+make version
+make set-version VERSION=0.1.1
+make check-version
+
 git add pyproject.toml src/speechloom/__init__.py
 git commit -m "release: prepare 0.1.1"
 git push origin main
