@@ -70,6 +70,12 @@ jobs:
             --with-nmt \
             --skip-gpu-check \
             --skip-runtime-check
+      - name: Bundle CUDA user-space runtime libraries
+        run: |
+          python3 scripts/bundle_cuda_runtime.py \
+            --prefix .runtime/release-cuda \
+            --license /NGC-DL-CONTAINER-LICENSE \
+            --license /usr/share/doc/libnccl2/copyright
       - name: Package CUDA runtime
         run: |
           python3 scripts/package_runtime.py \

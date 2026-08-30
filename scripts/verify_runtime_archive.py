@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from speechloom.runtime_archive import extract_runtime_archive, read_runtime_metadata
+from speechloom.cuda_runtime import dependency_issues
 
 
 def main() -> int:
@@ -29,23 +30,14 @@ def main() -> int:
                 Path(temporary) / "runtime",
                 metadata,
             )
-            linked = subprocess.run(
-                ["ldd", str(executable)],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
+            runtime_root = executable.parents[1]
+            issues = dependency_issues(
+                runtime_root,
+                allow_host_driver=metadata.backend == "cuda",
             )
-            missing = [
-                line.strip().split()[0]
-                for line in linked.stdout.splitlines()
-                if "=> not found" in line
-            ]
-            allowed_missing = {"libcuda.so.1", "libnvidia-ml.so.1"}
-            unexpected = sorted(set(missing) - allowed_missing)
-            if unexpected:
+            if issues:
                 parser.error(
-                    f"{archive.name} has unbundled dependencies: {', '.join(unexpected)}"
+                    f"{archive.name} has unbundled dependencies: {', '.join(issues)}"
                 )
             if metadata.backend == "cpu":
                 subprocess.run([str(executable), "--version"], check=True)

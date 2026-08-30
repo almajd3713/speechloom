@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -21,6 +22,114 @@ from speechloom.runtime_archive import (
 
 
 class RuntimeArchiveTests(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("gcc") and shutil.which("ldd"), "requires GCC and ldd"
+    )
+    def test_cuda_bundler_makes_archive_independent_of_toolkit_libraries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = root / "prefix"
+            external = root / "cuda/lib64"
+            external.mkdir(parents=True)
+            provider_source = root / "cudart.c"
+            provider_source.write_text(
+                "int fixture_cuda(void) { return 0; }\n", encoding="utf-8"
+            )
+            real_library = external / "libcudart.so.12.6.0"
+            run_command(
+                [
+                    "gcc",
+                    "-shared",
+                    "-fPIC",
+                    str(provider_source),
+                    "-Wl,-soname,libcudart.so.12",
+                    "-o",
+                    str(real_library),
+                ]
+            )
+            (external / "libcudart.so.12").symlink_to(real_library.name)
+            (external / "libcudart.so").symlink_to(real_library.name)
+            executable_source = root / "main.c"
+            executable_source.write_text(
+                '#include <stdio.h>\nextern int fixture_cuda(void);\n'
+                'int main(void) { puts("fixture CUDA runtime"); return fixture_cuda(); }\n',
+                encoding="utf-8",
+            )
+            executable = prefix / "bin/nemo-speech"
+            executable.parent.mkdir(parents=True)
+            run_command(
+                [
+                    "gcc",
+                    str(executable_source),
+                    f"-L{external}",
+                    "-Wl,--no-as-needed",
+                    "-lcudart",
+                    f"-Wl,-rpath,{external}",
+                    "-o",
+                    str(executable),
+                ]
+            )
+            license_file = prefix / "share/licenses/nemo-speech/LICENSE"
+            license_file.parent.mkdir(parents=True)
+            license_file.write_text("fixture license\n", encoding="utf-8")
+            cuda_license = root / "NGC-DL-CONTAINER-LICENSE"
+            cuda_license.write_text("fixture CUDA license\n", encoding="utf-8")
+            metadata = RuntimeArchiveMetadata(
+                backend="cuda",
+                system="linux",
+                architecture="x86_64",
+                revision="a" * 40,
+                features=("asr", "translation"),
+            )
+            unbundled = root / "unbundled.tar.gz"
+            build_runtime_archive(prefix, unbundled, metadata)
+            verifier = (
+                Path(__file__).resolve().parents[2]
+                / "scripts/verify_runtime_archive.py"
+            )
+
+            rejected = run_command(
+                [sys.executable, str(verifier), str(unbundled)],
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("libcudart.so.12", rejected.stderr)
+
+            bundler = (
+                Path(__file__).resolve().parents[2] / "scripts/bundle_cuda_runtime.py"
+            )
+            clean_environment = os.environ.copy()
+            clean_environment.pop("LD_LIBRARY_PATH", None)
+            run_command(
+                [
+                    sys.executable,
+                    str(bundler),
+                    "--prefix",
+                    str(prefix),
+                    "--license",
+                    str(cuda_license),
+                ],
+                env=clean_environment,
+            )
+            shutil.rmtree(root / "cuda")
+
+            linked = run_command(
+                ["ldd", str(prefix / "bin/nemo-speech.bin")],
+                env={"LD_LIBRARY_PATH": str(prefix / "lib")},
+            )
+            self.assertIn(str(prefix / "lib/libcudart.so.12"), linked.stdout)
+            symbols = run_command(["nm", "-D", str(prefix / "lib/libcudart.so.12")])
+            self.assertIn("fixture_cuda", symbols.stdout)
+            launched = run_command([str(executable), "--version"])
+            self.assertIn("fixture CUDA runtime", launched.stdout)
+            self.assertTrue((prefix / "lib/libcudart.so.12").is_symlink())
+            self.assertTrue(
+                (prefix / "share/licenses/cuda/NGC-DL-CONTAINER-LICENSE").is_file()
+            )
+            bundled = root / "bundled.tar.gz"
+            build_runtime_archive(prefix, bundled, metadata)
+            run_command([sys.executable, str(verifier), str(bundled)])
+
     def test_build_is_reproducible_and_extracts_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
