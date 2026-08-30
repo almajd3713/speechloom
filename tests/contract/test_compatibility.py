@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 import io
 import os
 from pathlib import Path
+import re
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +13,18 @@ from speechloom.jobs import MANIFEST_SCHEMA_VERSION, inspect_job
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+_REPEATED_ALIAS_METAVAR = re.compile(
+    r"(?P<short>-[A-Za-z0-9]) (?P<metavar>[A-Z][A-Z0-9_]*), "
+    r"(?P<long>--[A-Za-z0-9][A-Za-z0-9-]*) (?P=metavar)"
+)
+
+
+def _normalize_help(text: str) -> str:
+    flattened = " ".join(text.split())
+    return _REPEATED_ALIAS_METAVAR.sub(
+        r"\g<short>, \g<long> \g<metavar>",
+        flattened,
+    )
 
 
 class CliCompatibilityTests(unittest.TestCase):
@@ -34,12 +47,22 @@ class CliCompatibilityTests(unittest.TestCase):
                             main([*command, "--help"])
                 self.assertEqual(raised.exception.code, 0)
                 expected = (FIXTURES / "cli" / filename).read_text(encoding="utf-8")
-                # Argparse wrapping changes between Python releases; option and help
-                # content remain the compatibility contract, not continuation spacing.
+                # Argparse wrapping and repeated alias metavars vary between Python
+                # releases; option names, metavars, and help text remain the contract.
                 self.assertEqual(
-                    " ".join(output.getvalue().split()),
-                    " ".join(expected.split()),
+                    _normalize_help(output.getvalue()),
+                    _normalize_help(expected),
                 )
+
+    def test_help_normalization_preserves_alias_semantics(self) -> None:
+        legacy = "-o DIRECTORY, --output-dir DIRECTORY Write results"
+        current = "-o, --output-dir DIRECTORY Write results"
+
+        self.assertEqual(_normalize_help(legacy), _normalize_help(current))
+        self.assertNotEqual(
+            _normalize_help(legacy),
+            _normalize_help("-o, --output DIRECTORY Write results"),
+        )
 
 
 class ManifestV1CompatibilityTests(unittest.TestCase):
