@@ -7,8 +7,42 @@
     "build_script": "bootstrap_runtime.sh",
     "executable": "bin/nemo-speech",
     "license": "Apache-2.0",
-    "backends": ["cpu", "cuda", "vulkan"],
-    "features": ["asr", "translation"]
+    "backends": [
+      "cpu",
+      "cuda",
+      "vulkan"
+    ],
+    "features": [
+      "asr",
+      "translation"
+    ],
+    "archives": [
+      {
+        "backend": "cpu",
+        "system": "linux",
+        "architecture": "x86_64",
+        "filename": "speechloom-runtime-4f9676226f66-cpu-linux-x86_64.tar.gz",
+        "url": "https://github.com/almajd3713/speechloom/releases/download/runtime-v0.1.0/speechloom-runtime-4f9676226f66-cpu-linux-x86_64.tar.gz",
+        "sha256": "de0eb9d769faf92601f470a75fb4253f34028fab28241fb53e2c76f912f78c40",
+        "features": [
+          "asr"
+        ],
+        "minimum_free_bytes": 536870912
+      },
+      {
+        "backend": "cuda",
+        "system": "linux",
+        "architecture": "x86_64",
+        "filename": "speechloom-runtime-4f9676226f66-cuda-linux-x86_64.tar.gz",
+        "url": "https://github.com/almajd3713/speechloom/releases/download/runtime-v0.1.0/speechloom-runtime-4f9676226f66-cuda-linux-x86_64.tar.gz",
+        "sha256": "671532e0a86e72f211fd303b2325dd6ac7fa3c8428273e80d7506984c3e373e5",
+        "features": [
+          "asr",
+          "translation"
+        ],
+        "minimum_free_bytes": 2412093348
+      }
+    ]
   },
   "models": [
     {
