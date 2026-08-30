@@ -65,13 +65,57 @@ Always dispatch this workflow from `main`, because the generated registry pull r
 uses the selected workflow branch as its base. Do not reuse or move a published runtime
 tag.
 
-## Promote the runtime registry
+## Prepare the Python package automatically
 
-Review and merge the registry pull request created by the runtime workflow. A Python
-package published before this merge will not know about the new runtime archive and may
-fall back to a local source build.
+Run the preparation workflow from `main` with the new package version:
 
-## Prepare the Python package
+```bash
+make prepare-release VERSION=0.1.1
+```
+
+By default, it selects the newest stable GitHub release whose tag starts with
+`runtime-v`. To select a specific runtime, pass either its version or full tag:
+
+```bash
+make prepare-release VERSION=0.1.1 RUNTIME_VERSION=0.1.0
+make prepare-release VERSION=0.1.1 RUNTIME_VERSION=runtime-v0.1.0
+```
+
+The workflow:
+
+- rejects an existing `vVERSION` package tag;
+- resolves and downloads the selected runtime release;
+- verifies its published checksums and archive dependencies;
+- updates `pyproject.toml`, `src/speechloom/__init__.py`, and the bundled runtime
+  registry;
+- runs the full test suite;
+- creates or reuses `release-vVERSION` and opens a preparation pull request.
+
+The runtime registry promotion pull request may be merged first. If it is still open,
+the package preparation pull request can carry the same registry update, and the
+standalone promotion pull request can then be closed.
+
+To request automatic merge after required checks pass, opt in explicitly:
+
+```bash
+make prepare-release VERSION=0.1.1 AUTO_MERGE=true
+```
+
+If GitHub auto-merge or an allowed merge strategy is unavailable, preparation still
+succeeds and leaves the pull request open for manual review. This option does not create
+the final package tag or publish to PyPI.
+
+You can also dispatch the workflow without Make:
+
+```bash
+gh workflow run prepare-release.yml \
+  --ref main \
+  -f package_version=0.1.1 \
+  -f runtime_version=latest \
+  -f auto_merge=false
+```
+
+## Prepare the Python package manually
 
 Use the version helper to inspect the current version and update `pyproject.toml` and
 `src/speechloom/__init__.py` together. For example, prepare version `0.1.1`:
@@ -122,9 +166,8 @@ package releases and triggers the PyPI workflow.
 ```text
 runtime dry run
   -> native runtime GitHub Release
-  -> registry promotion pull request
-  -> registry merge
-  -> package version update
+  -> release preparation pull request (version + selected runtime registry)
+  -> review or optional auto-merge
   -> TestPyPI verification
   -> v*.*.* tag
   -> production PyPI release

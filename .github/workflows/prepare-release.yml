@@ -1,0 +1,205 @@
+name: Prepare Python release
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Python package version without the leading v
+        required: true
+        type: string
+      runtime_version:
+        description: Runtime version or tag; latest selects the newest stable runtime release
+        required: false
+        default: latest
+        type: string
+      auto_merge:
+        description: Request auto-merge after the preparation pull request is opened
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-python-release-${{ inputs.package_version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    env:
+      PACKAGE_VERSION: ${{ inputs.package_version }}
+      REQUESTED_RUNTIME_VERSION: ${{ inputs.runtime_version }}
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Validate package version and release base
+        run: |
+          if [ "$GITHUB_REF_NAME" != "$BASE_BRANCH" ]; then
+            echo "::error::Dispatch this workflow from $BASE_BRANCH, not $GITHUB_REF_NAME"
+            exit 2
+          fi
+          python scripts/version.py set "$PACKAGE_VERSION"
+          python scripts/version.py check
+          if git ls-remote --exit-code --tags origin "refs/tags/v$PACKAGE_VERSION" >/dev/null 2>&1; then
+            echo "::error::Package tag v$PACKAGE_VERSION already exists"
+            exit 2
+          fi
+      - name: Resolve runtime release
+        run: |
+          requested=${REQUESTED_RUNTIME_VERSION:-latest}
+          case "$requested" in
+            latest)
+              runtime_tag=$(gh release list \
+                --limit 100 \
+                --json tagName,isDraft,isPrerelease,publishedAt \
+                --jq '[.[] | select((.isDraft | not) and (.isPrerelease | not) and (.tagName | startswith("runtime-v")))] | sort_by(.publishedAt) | last | .tagName // ""')
+              ;;
+            runtime-v*) runtime_tag=$requested ;;
+            v*) runtime_tag="runtime-$requested" ;;
+            *) runtime_tag="runtime-v$requested" ;;
+          esac
+          if [ -z "$runtime_tag" ]; then
+            echo "::error::No stable runtime-v* release was found"
+            exit 2
+          fi
+          case "$runtime_tag" in
+            runtime-v[0-9]*) ;;
+            *)
+              echo "::error::Invalid runtime release tag: $runtime_tag"
+              exit 2
+              ;;
+          esac
+          gh release view "$runtime_tag" --json tagName --jq .tagName
+          echo "RUNTIME_TAG=$runtime_tag" >> "$GITHUB_ENV"
+          echo "Using native runtime $runtime_tag"
+      - name: Download and verify runtime archives
+        run: |
+          mkdir -p dist-runtime
+          gh release download "$RUNTIME_TAG" \
+            --dir dist-runtime \
+            --pattern 'speechloom-runtime-*.tar.gz' \
+            --pattern 'speechloom-runtime-*.tar.gz.sha256'
+          pushd dist-runtime
+          sha256sum --check --strict ./*.sha256
+          popd
+          python3 scripts/verify_runtime_archive.py dist-runtime/*.tar.gz
+      - name: Update package version and runtime registry
+        run: |
+          python3 scripts/update_runtime_registry.py \
+            --registry src/speechloom/data/registry.json \
+            --release-dir dist-runtime \
+            --release-tag "$RUNTIME_TAG" \
+            --repository "$GITHUB_REPOSITORY"
+          python scripts/version.py set "$PACKAGE_VERSION"
+          python scripts/version.py check
+      - name: Install test dependencies
+        run: python -m pip install -e ".[api,test]"
+      - name: Run release preparation tests
+        run: python -m unittest discover -s tests -v
+      - name: Push release preparation branch
+        run: |
+          branch="release-v$PACKAGE_VERSION"
+          echo "RELEASE_BRANCH=$branch" >> "$GITHUB_ENV"
+          if git diff --quiet -- pyproject.toml src/speechloom/__init__.py src/speechloom/data/registry.json; then
+            echo "::error::The requested package and runtime versions are already prepared on $BASE_BRANCH"
+            exit 2
+          fi
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch --no-tags origin "$branch"
+            for path in pyproject.toml src/speechloom/__init__.py src/speechloom/data/registry.json; do
+              existing="$RUNNER_TEMP/${path//\//-}.existing"
+              git show "FETCH_HEAD:$path" > "$existing"
+              if ! cmp -s "$path" "$existing"; then
+                echo "::error::Existing preparation branch $branch contains different $path data"
+                exit 1
+              fi
+            done
+            echo "Reusing existing release preparation branch $branch"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$branch"
+            git add pyproject.toml src/speechloom/__init__.py src/speechloom/data/registry.json
+            git commit -m "release: prepare $PACKAGE_VERSION"
+            git push origin "$branch"
+          fi
+      - name: Open release preparation pull request
+        run: |
+          pr_url=$(gh pr list \
+            --base "$BASE_BRANCH" \
+            --head "$RELEASE_BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url')
+          if [ -z "$pr_url" ]; then
+            if pr_output=$(gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$RELEASE_BRANCH" \
+              --title "Prepare Speechloom $PACKAGE_VERSION" \
+              --body "Updates the Python package to $PACKAGE_VERSION and pins native runtime $RUNTIME_TAG. After merging and verification, tag the merge commit as v$PACKAGE_VERSION." 2>&1); then
+              echo "$pr_output"
+              pr_url=$(gh pr view "$RELEASE_BRANCH" --json url --jq .url)
+            else
+              status=$?
+              case "$pr_output" in
+                *"GitHub Actions is not permitted to create or approve pull requests"*)
+                  manual_url="https://github.com/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$RELEASE_BRANCH?expand=1"
+                  echo "::warning title=Manual release pull request required::Open $manual_url"
+                  {
+                    echo "## Manual release pull request required"
+                    echo
+                    echo "[Open the release preparation pull request]($manual_url)"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                  ;;
+                *)
+                  echo "$pr_output" >&2
+                  exit "$status"
+                  ;;
+              esac
+            fi
+          else
+            echo "Release preparation pull request already exists: $pr_url"
+          fi
+          if [ -n "$pr_url" ]; then
+            echo "RELEASE_PR_URL=$pr_url" >> "$GITHUB_ENV"
+            {
+              echo "## Release preparation ready"
+              echo
+              echo "- Package: \`$PACKAGE_VERSION\`"
+              echo "- Runtime: \`$RUNTIME_TAG\`"
+              echo "- Pull request: $pr_url"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Request automatic merge
+        if: inputs.auto_merge
+        run: |
+          if [ -z "${RELEASE_PR_URL:-}" ]; then
+            echo "::warning::Auto-merge could not be requested because no pull request URL is available"
+            exit 0
+          fi
+          merge_flag=$(gh api "repos/$GITHUB_REPOSITORY" \
+            --jq 'if .allow_merge_commit then "--merge" elif .allow_squash_merge then "--squash" elif .allow_rebase_merge then "--rebase" else "" end')
+          if [ -z "$merge_flag" ]; then
+            echo "::warning::The repository has no supported pull-request merge method enabled"
+            exit 0
+          fi
+          if merge_output=$(gh pr merge "$RELEASE_PR_URL" --auto "$merge_flag" 2>&1); then
+            echo "$merge_output"
+            echo "Auto-merge requested for $RELEASE_PR_URL" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Auto-merge unavailable::$merge_output"
+            {
+              echo
+              echo "Auto-merge could not be enabled. The pull request remains open for manual review and merge."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -44,6 +44,46 @@ class PythonReleaseContractTests(unittest.TestCase):
         self.assertIn("gh release create", workflow)
         self.assertIn("SHA256SUMS", workflow)
 
+    def test_release_preparation_updates_versions_and_selects_a_runtime(self) -> None:
+        workflow = (PROJECT_ROOT / ".github/workflows/prepare-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("package_version:", workflow)
+        self.assertIn("runtime_version:", workflow)
+        self.assertIn("default: latest", workflow)
+        self.assertIn("auto_merge:", workflow)
+        self.assertIn("default: false", workflow)
+        self.assertIn('startswith("runtime-v")', workflow)
+        self.assertIn("gh release download", workflow)
+        self.assertIn("sha256sum --check --strict", workflow)
+        self.assertIn("scripts/verify_runtime_archive.py", workflow)
+        self.assertIn("scripts/update_runtime_registry.py", workflow)
+        self.assertEqual(workflow.count('scripts/version.py set "$PACKAGE_VERSION"'), 2)
+        self.assertIn("python -m unittest discover -s tests -v", workflow)
+        self.assertIn("git ls-remote --exit-code --tags", workflow)
+        self.assertIn("git ls-remote --exit-code --heads", workflow)
+        self.assertIn("gh pr list", workflow)
+        self.assertIn("gh pr create", workflow)
+
+        makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("prepare-release:", makefile)
+        self.assertIn('package_version="$(VERSION)"', makefile)
+        self.assertIn('runtime_version="$(RUNTIME_VERSION)"', makefile)
+        self.assertIn('auto_merge="$(AUTO_MERGE)"', makefile)
+
+    def test_release_preparation_can_request_auto_merge_without_hiding_failure(self) -> None:
+        workflow = (PROJECT_ROOT / ".github/workflows/prepare-release.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("if: inputs.auto_merge", workflow)
+        self.assertIn('gh pr merge "$RELEASE_PR_URL" --auto "$merge_flag"', workflow)
+        self.assertIn("allow_merge_commit", workflow)
+        self.assertIn("allow_squash_merge", workflow)
+        self.assertIn("allow_rebase_merge", workflow)
+        self.assertIn("The pull request remains open for manual review and merge", workflow)
+
     def test_typed_marker_and_registry_are_declared_as_package_data(self) -> None:
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
