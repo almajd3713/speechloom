@@ -385,7 +385,24 @@ async def _request_from_upload(
     ]
     if not files:
         raise ApiError(422, "missing_upload", "At least one files upload is required")
-    raw_options = form.get("options", "{}")
+    try:
+        return await _store_uploads(
+            files,
+            form.get("options", "{}"),
+            staging_root,
+            max_upload_bytes,
+        )
+    finally:
+        for upload in files:
+            await upload.close()
+
+
+async def _store_uploads(
+    files: list[UploadFile],
+    raw_options: object,
+    staging_root: Path,
+    max_upload_bytes: int,
+) -> TranscriptionRequest:
     try:
         options = json.loads(str(raw_options))
     except json.JSONDecodeError as exc:
@@ -416,7 +433,6 @@ async def _request_from_upload(
                             "Uploaded files exceed the configured limit",
                         )
                     handle.write(chunk)
-            await upload.close()
             stored.append(target)
         try:
             model = JobCreateRequest.model_validate(

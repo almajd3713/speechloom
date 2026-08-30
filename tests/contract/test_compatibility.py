@@ -34,7 +34,12 @@ class CliCompatibilityTests(unittest.TestCase):
                             main([*command, "--help"])
                 self.assertEqual(raised.exception.code, 0)
                 expected = (FIXTURES / "cli" / filename).read_text(encoding="utf-8")
-                self.assertEqual(output.getvalue(), expected)
+                # Argparse wrapping changes between Python releases; option and help
+                # content remain the compatibility contract, not continuation spacing.
+                self.assertEqual(
+                    " ".join(output.getvalue().split()),
+                    " ".join(expected.split()),
+                )
 
 
 class ManifestV1CompatibilityTests(unittest.TestCase):

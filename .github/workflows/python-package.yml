@@ -48,13 +48,12 @@ jobs:
             --checksums dist-checksums/SHA256SUMS
           python -m twine check dist/*
       - name: Verify the core wheel in isolation
-        env:
-          XDG_CONFIG_HOME: /tmp/speechloom-core-state/config
-          XDG_DATA_HOME: /tmp/speechloom-core-state/data
-          XDG_CACHE_HOME: /tmp/speechloom-core-state/cache
         run: |
           python -m venv /tmp/speechloom-core
           /tmp/speechloom-core/bin/python -m pip install --no-index --no-deps dist/*.whl
+          export SPEECHLOOM_CONFIG_HOME=/tmp/speechloom-core-state/config
+          export SPEECHLOOM_DATA_HOME=/tmp/speechloom-core-state/data
+          export SPEECHLOOM_CACHE_HOME=/tmp/speechloom-core-state/cache
           PIP_NO_INDEX=1 /tmp/speechloom-core/bin/python \
             scripts/verify_offline_import.py speechloom
           PIP_NO_INDEX=1 /tmp/speechloom-core/bin/python -c \
@@ -63,25 +62,23 @@ jobs:
           PIP_NO_INDEX=1 /tmp/speechloom-core/bin/python -m speechloom --help
           test ! -e /tmp/speechloom-core-state
       - name: Verify the source distribution in isolation
-        env:
-          XDG_CONFIG_HOME: /tmp/speechloom-sdist-state/config
-          XDG_DATA_HOME: /tmp/speechloom-sdist-state/data
-          XDG_CACHE_HOME: /tmp/speechloom-sdist-state/cache
         run: |
           python -m venv /tmp/speechloom-sdist
           /tmp/speechloom-sdist/bin/python -m pip install --no-deps dist/*.tar.gz
+          export SPEECHLOOM_CONFIG_HOME=/tmp/speechloom-sdist-state/config
+          export SPEECHLOOM_DATA_HOME=/tmp/speechloom-sdist-state/data
+          export SPEECHLOOM_CACHE_HOME=/tmp/speechloom-sdist-state/cache
           PIP_NO_INDEX=1 /tmp/speechloom-sdist/bin/python \
             scripts/verify_offline_import.py speechloom
           PIP_NO_INDEX=1 /tmp/speechloom-sdist/bin/speechloom --help
           test ! -e /tmp/speechloom-sdist-state
       - name: Verify the API extra in isolation
-        env:
-          XDG_CONFIG_HOME: /tmp/speechloom-api-state/config
-          XDG_DATA_HOME: /tmp/speechloom-api-state/data
-          XDG_CACHE_HOME: /tmp/speechloom-api-state/cache
         run: |
           python -m venv /tmp/speechloom-api
           /tmp/speechloom-api/bin/python -m pip install "$(find dist -name '*.whl')[api]"
+          export SPEECHLOOM_CONFIG_HOME=/tmp/speechloom-api-state/config
+          export SPEECHLOOM_DATA_HOME=/tmp/speechloom-api-state/data
+          export SPEECHLOOM_CACHE_HOME=/tmp/speechloom-api-state/cache
           PIP_NO_INDEX=1 /tmp/speechloom-api/bin/python \
             scripts/verify_offline_import.py speechloom speechloom.api fastapi
           PIP_NO_INDEX=1 /tmp/speechloom-api/bin/speechloom serve --help

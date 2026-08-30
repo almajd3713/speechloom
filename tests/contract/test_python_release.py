@@ -26,6 +26,7 @@ class PythonReleaseContractTests(unittest.TestCase):
         self.assertIn("python -m speechloom --help", workflow)
         self.assertIn("scripts/verify_offline_import.py", workflow)
         self.assertEqual(workflow.count("test ! -e /tmp/speechloom-"), 3)
+        self.assertEqual(workflow.count("export SPEECHLOOM_CONFIG_HOME="), 3)
 
     def test_release_uses_separate_trusted_publishing_jobs(self) -> None:
         workflow = (PROJECT_ROOT / ".github/workflows/release.yml").read_text(
