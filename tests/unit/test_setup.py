@@ -73,6 +73,7 @@ def _registry(asr_content: bytes, diar_content: bytes = b"diar") -> Registry:
     )
     return replace(
         registry,
+        runtime=replace(registry.runtime, archives=()),
         models=(asr, diar, registry.model("translation")),
     )
 
