@@ -42,6 +42,7 @@ class PythonReleaseContractTests(unittest.TestCase):
         self.assertIn('python-version: ["3.10", "3.14"]', workflow)
         self.assertIn("needs: test", workflow)
         self.assertIn("gh release create", workflow)
+        self.assertIn("GH_REPO: ${{ github.repository }}", workflow)
         self.assertIn("SHA256SUMS", workflow)
 
     def test_release_preparation_updates_versions_and_selects_a_runtime(self) -> None:
