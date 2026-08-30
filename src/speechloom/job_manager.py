@@ -206,6 +206,12 @@ class JobManager:
                 records = [record for record in records if record.state == state]
             return tuple(_snapshot(record) for record in records[offset : offset + limit])
 
+    def count(self, *, state: str | None = None) -> int:
+        with self._condition:
+            if state is None:
+                return len(self._records)
+            return sum(record.state == state for record in self._records.values())
+
     def events(self, job_id: str, *, after: int = 0) -> tuple[JobEvent, ...]:
         with self._condition:
             record = self._record(job_id)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Sequence
@@ -12,7 +13,7 @@ from typing import Any, Sequence
 from . import __version__
 from .config import Settings, load_managed_settings
 from .contracts import TranscriptionRequest
-from .errors import ConfigurationError, PipelineError
+from .errors import ConfigurationError, MissingDependencyError, PipelineError
 from .service import TranscriptionService
 from .setup import SetupManager, SetupRequest
 
@@ -84,6 +85,27 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = subparsers.add_parser("inspect", help="Inspect a job directory or manifest")
     inspect.add_argument("job", type=Path)
     inspect.add_argument("--json", action="store_true", help="Emit the complete manifest")
+
+    serve = subparsers.add_parser("serve", help="Run the optional local HTTP API")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--allow-remote", action="store_true")
+    serve.add_argument(
+        "--allow-root",
+        action="append",
+        type=Path,
+        default=[],
+        help="Allow local-path jobs below this root (repeatable)",
+    )
+    serve.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        help="Allow this browser origin (repeatable)",
+    )
+    serve.add_argument("--max-upload-mb", type=int, default=2048)
+    serve.add_argument("--queue-size", type=int, default=16)
+    serve.add_argument("--media-workers", type=int, default=2)
     return parser
 
 
@@ -107,6 +129,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _setup(args, SetupManager(config_path=args.config))
         if args.command == "inspect":
             return _inspect(args, TranscriptionService(Settings()))
+        if args.command == "serve":
+            return _serve(args)
         cli_values = _settings_cli_values(args)
         settings = load_managed_settings(config_path=args.config, cli_values=cli_values)
         service = TranscriptionService(settings)
@@ -240,6 +264,35 @@ def _inspect(args: argparse.Namespace, service: TranscriptionService) -> int:
             print(f"{artifact.name.upper()}: {artifact.path} ({artifact.size} bytes)")
         if details.error:
             print(f"Error: {details.error}")
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    try:
+        from .api.server import ServerSettings, run_server
+    except ImportError as exc:
+        raise MissingDependencyError(
+            'The HTTP API requires: python -m pip install "speechloom[api]"'
+        ) from exc
+
+    if not 1 <= args.port <= 65535:
+        raise ConfigurationError("--port must be between 1 and 65535")
+    if args.max_upload_mb < 1:
+        raise ConfigurationError("--max-upload-mb must be at least 1")
+    if args.queue_size < 1 or args.media_workers < 1:
+        raise ConfigurationError("--queue-size and --media-workers must be at least 1")
+    server_settings = ServerSettings(
+        host=args.host,
+        port=args.port,
+        allow_remote=args.allow_remote,
+        bearer_token=os.environ.get("SPEECHLOOM_API_TOKEN"),
+        allowed_roots=tuple(args.allow_root),
+        allowed_origins=tuple(args.allow_origin),
+        max_upload_bytes=args.max_upload_mb * 1024 * 1024,
+        queue_size=args.queue_size,
+        media_workers=args.media_workers,
+    )
+    run_server(server_settings, config_path=args.config)
     return 0
 
 

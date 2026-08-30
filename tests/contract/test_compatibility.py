@@ -22,6 +22,7 @@ class CliCompatibilityTests(unittest.TestCase):
             ("transcribe",): "transcribe.txt",
             ("inspect",): "inspect.txt",
             ("setup",): "setup.txt",
+            ("serve",): "serve.txt",
         }
 
         for command, filename in snapshots.items():

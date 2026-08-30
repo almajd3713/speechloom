@@ -101,6 +101,20 @@ text and subtitle formats. Completed jobs are reused unless `--force` is set.
 
 Run `speechloom transcribe --help` for all options.
 
+## Local API
+
+Install the optional server dependencies and allow the directories a desktop
+client may submit:
+
+```bash
+python3 -m pip install -e ".[api]"
+speechloom serve --allow-root /path/to/media
+```
+
+The API listens on `127.0.0.1:8765`; OpenAPI documentation is available at
+`/docs`. Remote binding requires `--allow-remote` and a
+`SPEECHLOOM_API_TOKEN` bearer token.
+
 ## Configuration
 
 Settings are read in this order:

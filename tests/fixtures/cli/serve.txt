@@ -1,0 +1,19 @@
+usage: speechloom serve [-h] [--host HOST] [--port PORT] [--allow-remote]
+                        [--allow-root ALLOW_ROOT]
+                        [--allow-origin ALLOW_ORIGIN]
+                        [--max-upload-mb MAX_UPLOAD_MB]
+                        [--queue-size QUEUE_SIZE]
+                        [--media-workers MEDIA_WORKERS]
+
+options:
+  -h, --help            show this help message and exit
+  --host HOST
+  --port PORT
+  --allow-remote
+  --allow-root ALLOW_ROOT
+                        Allow local-path jobs below this root (repeatable)
+  --allow-origin ALLOW_ORIGIN
+                        Allow this browser origin (repeatable)
+  --max-upload-mb MAX_UPLOAD_MB
+  --queue-size QUEUE_SIZE
+  --media-workers MEDIA_WORKERS
