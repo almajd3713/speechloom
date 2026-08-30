@@ -48,8 +48,17 @@ class RuntimeReleaseContractTests(unittest.TestCase):
             workflow.index("name: runtime-cuda"),
         )
         self.assertEqual(workflow.count("python3-venv"), 2)
+        self.assertIn("Push registry promotion branch", workflow)
         self.assertIn("Open registry promotion pull request", workflow)
+        self.assertIn("git ls-remote --exit-code --heads", workflow)
+        self.assertIn("cmp -s dist-runtime/registry.json", workflow)
+        self.assertIn("gh pr list", workflow)
         self.assertIn("gh pr create", workflow)
+        self.assertIn(
+            "GitHub Actions is not permitted to create or approve pull requests",
+            workflow,
+        )
+        self.assertIn("Manual registry promotion required", workflow)
 
     def test_cuda_hardware_checks_can_be_bypassed_explicitly_for_builds(self) -> None:
         result = run_command(

@@ -153,24 +153,73 @@ jobs:
           gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
             gh release create "$RELEASE_TAG" --title "Speechloom runtime $RELEASE_TAG" --notes "Pinned NeMo-Speech.cpp runtime archives."
           gh release upload "$RELEASE_TAG" dist-runtime/*.tar.gz dist-runtime/*.sha256 --clobber
+      - name: Push registry promotion branch
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="runtime-registry-$RELEASE_TAG"
+          echo "REGISTRY_BRANCH=$branch" >> "$GITHUB_ENV"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch --no-tags origin "$branch"
+            existing_registry="$RUNNER_TEMP/existing-runtime-registry.json"
+            git show FETCH_HEAD:src/speechloom/data/registry.json > "$existing_registry"
+            if ! cmp -s dist-runtime/registry.json "$existing_registry"; then
+              echo "::error::Existing promotion branch $branch contains different registry data"
+              exit 1
+            fi
+            echo "Reusing existing registry promotion branch $branch"
+          else
+            cp dist-runtime/registry.json src/speechloom/data/registry.json
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$branch"
+            git add src/speechloom/data/registry.json
+            git commit -m "build: register $RELEASE_TAG runtime archives"
+            git push origin "$branch"
+          fi
       - name: Open registry promotion pull request
         if: inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp dist-runtime/registry.json src/speechloom/data/registry.json
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          branch="runtime-registry-$RELEASE_TAG"
-          git checkout -b "$branch"
-          git add src/speechloom/data/registry.json
-          git commit -m "build: register $RELEASE_TAG runtime archives"
-          git push origin "$branch"
-          gh pr create \
+          existing_url=$(gh pr list \
             --base "$GITHUB_REF_NAME" \
-            --head "$branch" \
+            --head "$REGISTRY_BRANCH" \
+            --state open \
+            --json url \
+            --jq '.[0].url')
+          if [ -n "$existing_url" ]; then
+            echo "Registry promotion pull request already exists: $existing_url"
+            exit 0
+          fi
+          if pr_output=$(gh pr create \
+            --base "$GITHUB_REF_NAME" \
+            --head "$REGISTRY_BRANCH" \
             --title "Register $RELEASE_TAG runtime archives" \
-            --body "Pins the verified CPU and CUDA archive URLs and checksums produced by the runtime release workflow."
+            --body "Pins the verified CPU and CUDA archive URLs and checksums produced by the runtime release workflow." 2>&1); then
+            echo "$pr_output"
+            exit 0
+          else
+            status=$?
+          fi
+          case "$pr_output" in
+            *"GitHub Actions is not permitted to create or approve pull requests"*)
+              manual_url="https://github.com/$GITHUB_REPOSITORY/compare/$GITHUB_REF_NAME...$REGISTRY_BRANCH?expand=1"
+              echo "::warning title=Manual registry promotion required::Open $manual_url"
+              {
+                echo "## Manual registry promotion required"
+                echo
+                echo "GitHub Actions is not permitted to create pull requests in this repository."
+                echo
+                echo "[Open the registry promotion pull request]($manual_url)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "$pr_output" >&2
+              exit "$status"
+              ;;
+          esac
 
   verify:
     needs: [cpu, cuda]

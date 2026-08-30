@@ -46,6 +46,21 @@ It then:
 - uploads CPU and CUDA archives and checksums;
 - opens a pull request containing the pinned runtime registry entries.
 
+If repository policy prevents `GITHUB_TOKEN` from creating pull requests, the workflow
+keeps the pushed promotion branch, prints a manual pull-request link in the job summary,
+and completes successfully. You can use that link or create the pull request with:
+
+```bash
+gh pr create \
+  --base main \
+  --head runtime-registry-runtime-v0.1.0 \
+  --title "Register runtime-v0.1.0 runtime archives" \
+  --body "Pins the verified CPU and CUDA runtime archives."
+```
+
+To permit automatic creation instead, enable **Settings → Actions → General → Workflow
+permissions → Allow GitHub Actions to create and approve pull requests**.
+
 Always dispatch this workflow from `main`, because the generated registry pull request
 uses the selected workflow branch as its base. Do not reuse or move a published runtime
 tag.
