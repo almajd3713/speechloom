@@ -28,11 +28,25 @@ class RuntimeReleaseContractTests(unittest.TestCase):
         self.assertIn("/NGC-DL-CONTAINER-LICENSE", workflow)
         self.assertIn("/usr/share/doc/libnccl2/copyright", workflow)
         self.assertIn("scripts/update_runtime_registry.py", workflow)
-        self.assertIn("scripts/verify_runtime_archive.py", workflow)
+        self.assertEqual(workflow.count("scripts/verify_runtime_archive.py"), 3)
         self.assertIn("needs: [cpu, cuda, verify]", workflow)
         self.assertIn("actions/checkout@v6", workflow)
+        self.assertEqual(workflow.count("actions/cache/restore@v5"), 2)
+        self.assertEqual(workflow.count("actions/cache/save@v5"), 2)
         self.assertIn("actions/upload-artifact@v7", workflow)
         self.assertIn("actions/download-artifact@v8", workflow)
+        self.assertIn("Restore compiled CUDA runtime", workflow)
+        self.assertIn("Save compiled CUDA runtime", workflow)
+        self.assertIn("Verify CPU runtime archive", workflow)
+        self.assertIn("Verify CUDA runtime archive", workflow)
+        self.assertLess(
+            workflow.index("Package CUDA runtime"),
+            workflow.index("Verify CUDA runtime archive"),
+        )
+        self.assertLess(
+            workflow.index("Verify CUDA runtime archive"),
+            workflow.index("name: runtime-cuda"),
+        )
         self.assertEqual(workflow.count("python3-venv"), 2)
         self.assertIn("Open registry promotion pull request", workflow)
         self.assertIn("gh pr create", workflow)

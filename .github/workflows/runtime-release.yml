@@ -29,13 +29,27 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ninja-build git curl ca-certificates python3 python3-venv
+          sudo apt-get install -y build-essential ninja-build git curl ca-certificates python3 python3-venv tar zstd
+      - name: Restore compiled CPU runtime
+        id: restore-cpu-runtime
+        uses: actions/cache/restore@v5
+        with:
+          path: .runtime/release-cpu
+          key: speechloom-native-cpu-v1-${{ env.RUNTIME_REVISION }}-${{ hashFiles('scripts/bootstrap_runtime.sh', 'scripts/bootstrap_build_tools.sh') }}
       - name: Install pinned CMake
+        if: steps.restore-cpu-runtime.outputs.cache-hit != 'true'
         run: scripts/bootstrap_build_tools.sh --prefix .runtime/tools
       - name: Build CPU runtime
+        if: steps.restore-cpu-runtime.outputs.cache-hit != 'true'
         run: |
           export PATH="$PWD/.runtime/tools/bin:$PATH"
           scripts/bootstrap_runtime.sh --backend cpu --prefix .runtime/release-cpu --tools-prefix .runtime/tools
+      - name: Save compiled CPU runtime
+        if: steps.restore-cpu-runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .runtime/release-cpu
+          key: ${{ steps.restore-cpu-runtime.outputs.cache-primary-key }}
       - name: Package CPU runtime
         run: |
           python3 scripts/package_runtime.py \
@@ -44,6 +58,8 @@ jobs:
             --backend cpu \
             --revision "$RUNTIME_REVISION" \
             --features asr
+      - name: Verify CPU runtime archive
+        run: python3 scripts/verify_runtime_archive.py dist-runtime/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: runtime-cpu
@@ -57,10 +73,18 @@ jobs:
       - name: Install build prerequisites
         run: |
           apt-get update
-          apt-get install -y build-essential ninja-build git curl ca-certificates python3 python3-venv
+          apt-get install -y build-essential ninja-build git curl ca-certificates python3 python3-venv tar zstd
+      - name: Restore compiled CUDA runtime
+        id: restore-cuda-runtime
+        uses: actions/cache/restore@v5
+        with:
+          path: .runtime/release-cuda
+          key: speechloom-native-cuda126-nmt-v1-${{ env.RUNTIME_REVISION }}-${{ hashFiles('scripts/bootstrap_runtime.sh', 'scripts/bootstrap_build_tools.sh') }}
       - name: Install pinned CMake
+        if: steps.restore-cuda-runtime.outputs.cache-hit != 'true'
         run: scripts/bootstrap_build_tools.sh --prefix .runtime/tools
       - name: Build CUDA runtime with translation
+        if: steps.restore-cuda-runtime.outputs.cache-hit != 'true'
         run: |
           export PATH="$PWD/.runtime/tools/bin:$PATH"
           scripts/bootstrap_runtime.sh \
@@ -70,6 +94,12 @@ jobs:
             --with-nmt \
             --skip-gpu-check \
             --skip-runtime-check
+      - name: Save compiled CUDA runtime
+        if: steps.restore-cuda-runtime.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .runtime/release-cuda
+          key: ${{ steps.restore-cuda-runtime.outputs.cache-primary-key }}
       - name: Bundle CUDA user-space runtime libraries
         run: |
           python3 scripts/bundle_cuda_runtime.py \
@@ -84,6 +114,8 @@ jobs:
             --backend cuda \
             --revision "$RUNTIME_REVISION" \
             --features asr,translation
+      - name: Verify CUDA runtime archive
+        run: python3 scripts/verify_runtime_archive.py dist-runtime/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: runtime-cuda
