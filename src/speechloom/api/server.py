@@ -615,6 +615,9 @@ class _BoundaryMiddleware:
     def __init__(self, app, *, settings: ServerSettings) -> None:
         self.app = app
         self.settings = settings
+        self.loopback = _is_loopback(settings.host)
+        self.hosts = _loopback_hosts(settings.port)
+        self.origins = _trusted_origins(settings)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -623,6 +626,17 @@ class _BoundaryMiddleware:
         request_id = uuid4().hex
         scope.setdefault("state", {})["request_id"] = request_id
         request = Request(scope, receive=receive)
+        if self.loopback and request.headers.get("host", "").lower() not in self.hosts:
+            response = _error_response(
+                request, 403, "host_not_allowed", "Host header is not allowed"
+            )
+            await response(scope, receive, send)
+            return
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in self.origins:
+            response = _error_response(request, 403, "origin_not_allowed", "Origin is not allowed")
+            await response(scope, receive, send)
+            return
         content_length = request.headers.get("content-length")
         if content_length:
             try:
@@ -657,6 +671,20 @@ class _BoundaryMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_request_id)
+
+
+def _loopback_hosts(port: int) -> frozenset[str]:
+    return frozenset({f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"})
+
+
+def _trusted_origins(settings: ServerSettings) -> frozenset[str]:
+    origins = set(settings.allowed_origins)
+    if _is_loopback(settings.host):
+        port = settings.port
+        origins.update(
+            {f"http://127.0.0.1:{port}", f"http://localhost:{port}", f"http://[::1]:{port}"}
+        )
+    return frozenset(origins)
 
 
 def _is_loopback(host: str) -> bool:

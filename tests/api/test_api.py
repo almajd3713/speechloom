@@ -88,7 +88,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             app, manager = self._app(root, service)
             try:
                 async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
                 ) as client:
                     self.assertEqual((await client.get("/v1/health")).json(), {"status": "ok"})
                     capabilities = (await client.get("/v1/capabilities")).json()
@@ -170,7 +170,7 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             app, manager = self._app(root, service)
             try:
                 async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
                 ) as client:
                     denied = await client.post("/v1/jobs", json={"inputs": [str(outside)]})
                     self.assertEqual(denied.status_code, 403)
@@ -254,6 +254,74 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(local_path.status_code, 403)
             finally:
                 remote_manager.close(cancel=True)
+
+    async def test_rejects_foreign_hosts_and_origins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, manager = self._app(root, FixtureService())
+            upload = {"files": [("files", ("clip.wav", b"media", "audio/wav"))]}
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://attacker.example:8765"
+                ) as client:
+                    health = await client.get("/v1/health")
+                    posted = await client.post("/v1/jobs", **upload)
+                    self.assertEqual(health.status_code, 403)
+                    self.assertEqual(health.json()["error"]["code"], "host_not_allowed")
+                    self.assertEqual(posted.status_code, 403)
+                    self.assertEqual(posted.json()["error"]["code"], "host_not_allowed")
+                    self.assertFalse((root / "staging").exists())
+
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    foreign = {"Origin": "https://evil.example"}
+                    listed = await client.get("/v1/jobs", headers=foreign)
+                    posted = await client.post("/v1/jobs", headers=foreign, **upload)
+                    null_origin = await client.get("/v1/jobs", headers={"Origin": "null"})
+                    self.assertEqual(listed.status_code, 403)
+                    self.assertEqual(listed.json()["error"]["code"], "origin_not_allowed")
+                    self.assertEqual(posted.status_code, 403)
+                    self.assertEqual(posted.json()["error"]["code"], "origin_not_allowed")
+                    self.assertEqual(null_origin.status_code, 403)
+                    own = await client.get(
+                        "/v1/health", headers={"Origin": "http://127.0.0.1:8765"}
+                    )
+                    self.assertEqual(own.status_code, 200)
+
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://localhost:8765"
+                ) as client:
+                    self.assertEqual((await client.get("/v1/health")).status_code, 200)
+
+                allowed_service = FixtureService()
+                allowed_manager = JobManager(allowed_service, queue_size=4, media_workers=1)
+                allowed_app = create_app(
+                    allowed_service,
+                    allowed_manager,
+                    ServerSettings(
+                        allowed_roots=(root,),
+                        allowed_origins=("http://localhost:5173",),
+                        staging_dir=root / "staging-2",
+                    ),
+                )
+                try:
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=allowed_app),
+                        base_url="http://127.0.0.1:8765",
+                    ) as client:
+                        configured = await client.get(
+                            "/v1/health", headers={"Origin": "http://localhost:5173"}
+                        )
+                        other = await client.get(
+                            "/v1/health", headers={"Origin": "http://localhost:5174"}
+                        )
+                        self.assertEqual(configured.status_code, 200)
+                        self.assertEqual(other.status_code, 403)
+                finally:
+                    allowed_manager.close(cancel=True)
+            finally:
+                manager.close(cancel=True)
 
     async def test_remote_binding_requires_explicit_permission_and_token(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "--allow-remote"):
