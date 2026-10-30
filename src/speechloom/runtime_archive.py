@@ -49,7 +49,7 @@ class RuntimeArchiveMetadata:
                 revision=str(payload["revision"]),
                 features=tuple(str(item) for item in features),
                 executable=str(payload["executable"]),
-                schema_version=int(payload["schema_version"]),
+                schema_version=RUNTIME_ARCHIVE_SCHEMA_VERSION,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise SetupError("Runtime archive metadata is incomplete") from exc

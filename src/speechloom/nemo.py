@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 from typing import Any, Callable, Iterable
 
-from .errors import InferenceError, ModelError, UnsupportedFeatureError
+from .errors import InferenceError, ModelError, PipelineError, UnsupportedFeatureError
 from .process import CommandFailed, CommandResult, run_command
 from .schema import Transcript, Word
 
@@ -183,7 +183,7 @@ def adapt_payload(payload: Any, *, duration: float | None = None) -> Transcript:
     return transcript
 
 
-def map_native_failure(result: CommandResult) -> InferenceError:
+def map_native_failure(result: CommandResult) -> PipelineError:
     """Map a non-zero native result without requiring CommandFailed."""
 
     return _map_native_result(result)
@@ -275,11 +275,11 @@ def _join_words(words: list[Word]) -> str:
     return text
 
 
-def _map_native_failure(exc: CommandFailed) -> InferenceError:
+def _map_native_failure(exc: CommandFailed) -> PipelineError:
     return _map_native_result(exc.result)
 
 
-def _map_native_result(result: CommandResult) -> InferenceError:
+def _map_native_result(result: CommandResult) -> PipelineError:
     code = result.returncode
     diagnostic = result.stderr.strip() or result.stdout.strip() or "unknown inference failure"
     if code == 3:
@@ -289,7 +289,7 @@ def _map_native_result(result: CommandResult) -> InferenceError:
     return InferenceError(f"NeMo transcription failed: {diagnostic}", native_exit_code=code)
 
 
-def _map_translation_failure(result: CommandResult) -> InferenceError:
+def _map_translation_failure(result: CommandResult) -> PipelineError:
     code = result.returncode
     diagnostic = result.stderr.strip() or result.stdout.strip() or "unknown translation failure"
     if code == 3:

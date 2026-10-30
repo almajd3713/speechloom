@@ -758,7 +758,7 @@ class SetupManager:
             None,
         )
         if entry is not None:
-            candidate = Path(package.locate_file(entry))
+            candidate = Path(str(package.locate_file(entry)))
             if candidate.is_file():
                 return candidate
         raise SetupError(f"Speechloom installation script is missing: {name}")

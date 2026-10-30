@@ -64,3 +64,8 @@ select = ["E4", "E7", "E9", "F", "I"]
 force-sort-within-sections = true
 known-first-party = ["speechloom"]
 lines-after-imports = 2
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/speechloom"]
+ignore_missing_imports = true
