@@ -58,6 +58,7 @@ if [[ -f "$destination" ]]; then
         exit 0
     fi
     echo "Existing artifact checksum does not match: ${destination}" >&2
+    echo "Delete it and rerun speechloom setup." >&2
     exit 1
 fi
 

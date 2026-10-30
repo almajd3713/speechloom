@@ -746,6 +746,52 @@ class DownloadArtifactScriptTests(unittest.TestCase):
                 (cache / "fixture.gguf.part").read_bytes(), b"partial-download"
             )
 
+    def test_existing_mismatched_artifact_explains_the_fix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\nprintf fixture-model > \"$output\"\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            script = Path(__file__).resolve().parents[2] / "scripts/download_artifact.sh"
+            destination = root / "models"
+            cache = root / "cache"
+            destination.mkdir()
+            (destination / "fixture.gguf").write_bytes(b"other")
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+            }
+
+            result = run_command(
+                [
+                    "bash",
+                    str(script),
+                    "--destination",
+                    str(destination),
+                    "--download-cache",
+                    str(cache),
+                    "--url",
+                    "https://models.example/fixture.gguf",
+                    "--filename",
+                    "fixture.gguf",
+                    "--sha256",
+                    hashlib.sha256(b"fixture-model").hexdigest(),
+                ],
+                env=environment,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Existing artifact checksum does not match:", result.stderr)
+            self.assertIn("Delete it and rerun speechloom setup.", result.stderr)
+            self.assertEqual((destination / "fixture.gguf").read_bytes(), b"other")
+            self.assertFalse((cache / "fixture.gguf.part").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
