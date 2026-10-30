@@ -40,6 +40,12 @@ StageSink = Callable[[str], None]
 EventSink = Callable[[StageEvent], None]
 Doctor = Callable[..., DoctorReport]
 RUNTIME_FEATURES: frozenset[str] = frozenset({"translation"})
+GENERATED_CONFIG = (
+    "[speechloom]\n"
+    "# Written by `speechloom setup`. Engine and model paths are read from\n"
+    "# install.json in the Speechloom data directory. Set nemo_speech, model or\n"
+    "# device here only to override the managed installation.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -273,8 +279,11 @@ class SetupManager:
 
         if not self.config_path.exists():
             _emit(on_stage, "writing default configuration")
-            self._write_config(runtime, asr, backend)
+            self._write_config()
             actions.append("created default configuration")
+        elif old_state is not None and self._remove_generated_paths(old_state):
+            _emit(on_stage, "removed setup-written paths from configuration")
+            actions.append("removed setup-written paths from configuration")
 
         state = InstallState(
             backend=backend,
@@ -678,21 +687,32 @@ class SetupManager:
                 f"Not enough free space for installation: need {minimum} bytes, have {free}"
             )
 
-    def _write_config(
-        self,
-        runtime: InstalledArtifact,
-        asr: InstalledArtifact,
-        backend: str,
-    ) -> None:
-        content = (
-            "[speechloom]\n"
-            f"nemo_speech = {runtime.path}\n"
-            f"model = {asr.path}\n"
-            f"device = {backend}\n"
-            "output_dir = transcripts\n"
-            "formats = json,txt,srt,vtt\n"
-        )
-        atomic_write_text(self.config_path, content)
+    def _write_config(self) -> None:
+        atomic_write_text(self.config_path, GENERATED_CONFIG)
+
+    def _remove_generated_paths(self, state: InstallState) -> bool:
+        if not self.config_path.exists():
+            return False
+        lines = self.config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        asr = state.model("asr")
+        recorded = {
+            "nemo_speech": state.runtime.path if state.runtime else None,
+            "model": asr.path if asr else None,
+            "device": state.backend,
+        }
+        kept: list[str] = []
+        for line in lines:
+            match = re.fullmatch(
+                r"\s*(nemo_speech|model|device)\s*=\s*(.*?)\s*",
+                line.rstrip("\r\n"),
+            )
+            if match and recorded[match.group(1)] == match.group(2):
+                continue
+            kept.append(line)
+        if len(kept) == len(lines):
+            return False
+        atomic_write_text(self.config_path, "".join(kept))
+        return True
 
     def _settings(self, state: InstallState) -> Settings:
         assert state.runtime is not None

@@ -10,13 +10,14 @@ import unittest
 from unittest.mock import patch
 
 from speechloom import CancellationController, StageEvent
+from speechloom.config import load_managed_settings
 from speechloom.doctor import DoctorReport
 from speechloom.errors import CancellationError, SetupError
 from speechloom.process import CommandResult, run_command
 from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import AppPaths, load_install_state
 from speechloom.runtime_archive import RuntimeArchiveMetadata, build_runtime_archive
-from speechloom.setup import SetupManager, SetupRequest
+from speechloom.setup import GENERATED_CONFIG, SetupManager, SetupRequest
 
 
 class FakeInstaller:
@@ -114,15 +115,16 @@ def _prebuilt_registry(root: Path, registry: Registry) -> tuple[Registry, str, b
     return prebuilt, filename, archive_path.read_bytes()
 
 
+def _environment(root: Path) -> dict[str, str]:
+    return {
+        "SPEECHLOOM_CONFIG_HOME": str(root / "config"),
+        "SPEECHLOOM_DATA_HOME": str(root / "data"),
+        "SPEECHLOOM_CACHE_HOME": str(root / "cache"),
+    }
+
+
 def _paths(root: Path) -> AppPaths:
-    return AppPaths.from_environment(
-        {
-            "SPEECHLOOM_CONFIG_HOME": str(root / "config"),
-            "SPEECHLOOM_DATA_HOME": str(root / "data"),
-            "SPEECHLOOM_CACHE_HOME": str(root / "cache"),
-        },
-        home=root,
-    )
+    return AppPaths.from_environment(_environment(root), home=root)
 
 
 def _working_gpu(argv, **kwargs) -> CommandResult:
@@ -522,6 +524,69 @@ class SetupManagerTests(unittest.TestCase):
             )
 
             self.assertEqual(manager._resolve_backend("auto", None, ()), "cpu")
+
+    def _configured_manager(self, root: Path) -> SetupManager:
+        scripts = root / "repo/scripts"
+        scripts.mkdir(parents=True)
+        for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+            (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+        return SetupManager(
+            paths=_paths(root),
+            registry=_registry(b"asr"),
+            runner=FakeInstaller(b"asr"),
+            doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+            repository_root=root / "repo",
+        )
+
+    def test_generated_configuration_leaves_paths_to_install_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._configured_manager(root)
+
+            result = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertEqual(manager.config_path.read_text(encoding="utf-8"), GENERATED_CONFIG)
+            settings = load_managed_settings(env=_environment(root))
+            self.assertEqual(settings.nemo_speech, result.state.runtime.path)
+            self.assertEqual(settings.model, result.state.model("asr").path)
+            self.assertEqual(settings.device, "cpu")
+
+    def test_setup_removes_paths_written_by_earlier_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._configured_manager(root)
+            first = manager.setup(SetupRequest(backend="cpu"))
+            manager.config_path.write_text(
+                "[speechloom]\n"
+                f"nemo_speech = {first.state.runtime.path}\n"
+                f"model = {first.state.model('asr').path}\n"
+                "device = cpu\n"
+                "output_dir = transcripts\n"
+                "formats = json,txt,srt,vtt\n"
+                "workers = 2\n",
+                encoding="utf-8",
+            )
+
+            second = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertEqual(
+                manager.config_path.read_text(encoding="utf-8"),
+                "[speechloom]\noutput_dir = transcripts\nformats = json,txt,srt,vtt\nworkers = 2\n",
+            )
+            self.assertEqual(second.actions, ("removed setup-written paths from configuration",))
+
+    def test_setup_keeps_user_configured_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._configured_manager(root)
+            manager.setup(SetupRequest(backend="cpu"))
+            custom = "[speechloom]\nmodel = /custom/model.gguf\ndevice = cuda\n"
+            manager.config_path.write_text(custom, encoding="utf-8")
+
+            second = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertEqual(manager.config_path.read_text(encoding="utf-8"), custom)
+            self.assertEqual(second.actions, ())
 
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
