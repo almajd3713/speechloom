@@ -23,7 +23,7 @@ from starlette.datastructures import UploadFile
 from speechloom.config import load_managed_settings
 from speechloom.contracts import ArtifactDetails, JobDetails, TranscriptionRequest
 from speechloom.errors import ConfigurationError
-from speechloom.job_manager import JobEvent, JobManager, ManagedJob, TERMINAL_STATES
+from speechloom.job_manager import TERMINAL_STATES, JobEvent, JobManager, ManagedJob
 from speechloom.runtime import AppPaths
 from speechloom.service import TranscriptionService
 

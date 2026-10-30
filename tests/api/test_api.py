@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
 import asyncio
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import tempfile
@@ -11,13 +11,13 @@ import unittest
 
 import httpx2 as httpx
 
+from speechloom.api.errors import ApiError
+from speechloom.api.server import ServerSettings, _format_sse_event, create_app
 from speechloom.artifacts import sha256_file
 from speechloom.contracts import JobDetails, StageEvent
 from speechloom.errors import ConfigurationError
 from speechloom.job_manager import JobManager
 from speechloom.jobs import JobResult
-from speechloom.api.errors import ApiError
-from speechloom.api.server import ServerSettings, _format_sse_event, create_app
 
 
 class FixtureService:

@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 import tempfile
-from typing import BinaryIO, Iterable
+from typing import Iterable
 
 from .errors import SetupError
 

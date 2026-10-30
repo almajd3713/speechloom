@@ -8,7 +8,7 @@ import unittest
 from speechloom.cli import build_parser
 from speechloom.config import default_config_path, load_managed_settings, load_settings
 from speechloom.errors import ConfigurationError
-from speechloom.runtime import InstallState, InstalledArtifact, save_install_state
+from speechloom.runtime import InstalledArtifact, InstallState, save_install_state
 
 
 class SettingsTests(unittest.TestCase):

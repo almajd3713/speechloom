@@ -12,8 +12,7 @@ from unittest.mock import patch
 from speechloom import CancellationController, StageEvent
 from speechloom.doctor import DoctorReport
 from speechloom.errors import CancellationError, SetupError
-from speechloom.process import CommandResult
-from speechloom.process import run_command
+from speechloom.process import CommandResult, run_command
 from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import AppPaths, load_install_state
 from speechloom.runtime_archive import RuntimeArchiveMetadata, build_runtime_archive

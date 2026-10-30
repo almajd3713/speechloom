@@ -23,8 +23,8 @@ from .process import CommandResult, run_command
 from .registry import ModelSpec, Registry, RuntimeArchiveSpec
 from .runtime import (
     AppPaths,
-    InstallState,
     InstalledArtifact,
+    InstallState,
     load_install_state,
     save_install_state,
 )

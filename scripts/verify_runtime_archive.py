@@ -13,8 +13,8 @@ import tempfile
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from speechloom.runtime_archive import extract_runtime_archive, read_runtime_metadata
 from speechloom.cuda_runtime import dependency_issues
+from speechloom.runtime_archive import extract_runtime_archive, read_runtime_metadata
 
 
 def main() -> int:
