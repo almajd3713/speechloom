@@ -14,6 +14,8 @@ from .schema import Transcript, Word
 
 
 Runner = Callable[..., CommandResult]
+# Transcripts of long recordings exceed the default capture limit of run_command.
+NATIVE_OUTPUT_LIMIT = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,7 @@ def transcribe(
         argv.extend(["--diar-model", str(options.diar_model)])
 
     try:
-        result = runner(argv)
+        result = runner(argv, max_output_chars=NATIVE_OUTPUT_LIMIT)
     except CommandFailed as exc:
         raise _map_native_failure(exc) from exc
     payload = _parse_json_output(result.stdout)
@@ -134,7 +136,7 @@ def translate_texts(
         if options.device != "auto":
             argv.extend(["--device", options.device])
         try:
-            result = runner(argv)
+            result = runner(argv, max_output_chars=NATIVE_OUTPUT_LIMIT)
         except CommandFailed as exc:
             raise _map_translation_failure(exc.result) from exc
 

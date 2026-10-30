@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 
@@ -32,6 +35,28 @@ class NemoAdapterTests(unittest.TestCase):
         self.assertEqual(transcript.text, "Привет, мир!")
         self.assertEqual(transcript.words[1].speaker, 2)
         self.assertIsNone(transcript.language)
+
+    def test_transcribe_keeps_output_longer_than_the_default_capture_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "long.wav"
+            model = root / "model.gguf"
+            for path in (audio, model):
+                path.write_bytes(b"fixture")
+            words = [
+                {"word": f"word{index}", "start": index * 0.5, "end": index * 0.5 + 0.4}
+                for index in range(20000)
+            ]
+            payload = root / "payload.json"
+            payload.write_text(json.dumps({"text": "long", "words": words}), encoding="utf-8")
+            engine = root / "engine.sh"
+            engine.write_text(f"#!/bin/sh\ncat '{payload}'\n", encoding="utf-8")
+            engine.chmod(engine.stat().st_mode | stat.S_IXUSR)
+            self.assertGreater(os.path.getsize(payload), 65_536)
+
+            transcript = transcribe(audio, NemoOptions(str(engine), model), duration=10000.0)
+
+            self.assertEqual(len(transcript.words), 20000)
 
     def test_transcribe_builds_one_integrated_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
