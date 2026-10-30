@@ -60,6 +60,10 @@ class TranscriptionService:
             raise ConfigurationError(
                 "Translation was requested but no translation model is configured or managed"
             )
+        if bool(source_language) != bool(translate_to):
+            raise ConfigurationError(
+                "Translation requires both a source language and a target language"
+            )
 
         sources = discover_inputs(list(request.inputs), recursive=request.recursive)
         if cancellation is not None:
@@ -101,7 +105,7 @@ class TranscriptionService:
             diar_model=Path(settings.diar_model).expanduser() if settings.diar_model else None,
             translation_model=(
                 Path(settings.translation_model).expanduser()
-                if settings.translation_model
+                if settings.translation_model and source_language and translate_to
                 else None
             ),
             source_language=source_language,
