@@ -8,10 +8,15 @@ from unittest.mock import ANY, Mock, patch
 
 from speechloom.cli import _settings_cli_values, build_parser, main
 from speechloom.config import Settings
-from speechloom.contracts import JobDetails, TranscriptionRequest
+from speechloom.contracts import JobDetails, StageEvent, TranscriptionRequest
 from speechloom.doctor import Check, DoctorReport
 from speechloom.jobs import JobResult
 from speechloom.setup import SetupStatus
+
+
+class _TerminalStream(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 class CliServiceContractTests(unittest.TestCase):
@@ -156,6 +161,61 @@ class CliServiceContractTests(unittest.TestCase):
                 args = build_parser().parse_args(["transcribe", "recording.mp4", *suffix])
 
                 self.assertEqual(_settings_cli_values(args)["shared_model"], expected)
+
+    def _progress_service(self, service_type: Mock) -> Mock:
+        service = service_type.return_value
+        source = Path("/media/recording.mp4")
+
+        def transcribe(request, on_event=None):
+            del request
+            if on_event is not None:
+                on_event(
+                    StageEvent(None, source, "transcribing", "started", "Transcription started")
+                )
+                on_event(
+                    StageEvent(
+                        None, source, "transcribing", "completed", "Canonical transcript committed"
+                    )
+                )
+            return [JobResult("recording.mp4", "out/job", "completed")]
+
+        service.transcribe.side_effect = transcribe
+        return service
+
+    @patch("speechloom.cli.TranscriptionService")
+    @patch("speechloom.cli.load_managed_settings")
+    def test_transcribe_prints_progress_on_a_terminal(
+        self,
+        load_managed_settings: Mock,
+        service_type: Mock,
+    ) -> None:
+        load_managed_settings.return_value = Settings(model="model.gguf")
+        self._progress_service(service_type)
+        stream = _TerminalStream()
+
+        with patch("sys.stderr", new=stream), redirect_stdout(io.StringIO()):
+            exit_code = main(["transcribe", "recording.mp4"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stream.getvalue(), "[transcribing] recording.mp4: Transcription started\n")
+
+    @patch("speechloom.cli.TranscriptionService")
+    @patch("speechloom.cli.load_managed_settings")
+    def test_transcribe_json_output_has_no_progress(
+        self,
+        load_managed_settings: Mock,
+        service_type: Mock,
+    ) -> None:
+        load_managed_settings.return_value = Settings(model="model.gguf")
+        service = self._progress_service(service_type)
+        stream = _TerminalStream()
+
+        with patch("sys.stderr", new=stream), redirect_stdout(io.StringIO()):
+            exit_code = main(["transcribe", "recording.mp4", "--json"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stream.getvalue(), "")
+        self.assertIsNone(service.transcribe.call_args.kwargs["on_event"])
 
 
 if __name__ == "__main__":
