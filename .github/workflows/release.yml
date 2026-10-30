@@ -60,12 +60,12 @@ jobs:
           python scripts/validate_distribution.py dist/* \
             --checksums dist-checksums/SHA256SUMS
           python -m twine check dist/*
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions
           path: dist/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: python-package-checksums
           path: dist-checksums/SHA256SUMS
@@ -81,7 +81,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: python-package-distributions
           path: dist
@@ -99,7 +99,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: python-package-distributions
           path: dist
@@ -112,11 +112,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: python-package-distributions
           path: dist
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           name: python-package-checksums
           path: dist-checksums
