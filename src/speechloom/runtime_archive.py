@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 import tempfile
-from typing import BinaryIO, Iterable
+from typing import Iterable
 
 from .errors import SetupError
 
@@ -49,7 +49,7 @@ class RuntimeArchiveMetadata:
                 revision=str(payload["revision"]),
                 features=tuple(str(item) for item in features),
                 executable=str(payload["executable"]),
-                schema_version=int(payload["schema_version"]),
+                schema_version=RUNTIME_ARCHIVE_SCHEMA_VERSION,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise SetupError("Runtime archive metadata is incomplete") from exc

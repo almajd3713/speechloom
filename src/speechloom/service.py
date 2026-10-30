@@ -10,9 +10,11 @@ from .config import Settings, load_managed_settings
 from .contracts import CancellationToken, JobDetails, StageEvent, TranscriptionRequest
 from .doctor import DoctorReport, run_doctor
 from .errors import ConfigurationError
+from .fingerprints import FINGERPRINT_CACHE_FILENAME
 from .jobs import JobResult, Pipeline, PipelineOptions, inspect_job
 from .media import discover_inputs
 from .process import CommandResult, run_command
+from .runtime import AppPaths
 
 
 Runner = Callable[..., CommandResult]
@@ -22,9 +24,16 @@ EventSink = Callable[[StageEvent], None]
 class TranscriptionService:
     """Stable application boundary over configuration, diagnostics, and jobs."""
 
-    def __init__(self, settings: Settings, *, runner: Runner = run_command) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        runner: Runner = run_command,
+        fingerprint_cache: Path | None = None,
+    ) -> None:
         self._settings = settings
         self._runner = runner
+        self._fingerprint_cache = fingerprint_cache
 
     @classmethod
     def from_default_config(
@@ -34,7 +43,12 @@ class TranscriptionService:
         env: Mapping[str, str] | None = None,
         runner: Runner = run_command,
     ) -> "TranscriptionService":
-        return cls(load_managed_settings(config_path=config_path, env=env), runner=runner)
+        return cls(
+            load_managed_settings(config_path=config_path, env=env),
+            runner=runner,
+            fingerprint_cache=AppPaths.from_environment(env).cache_dir
+            / FINGERPRINT_CACHE_FILENAME,
+        )
 
     def transcribe(
         self,
@@ -48,7 +62,7 @@ class TranscriptionService:
             cancellation.raise_if_cancelled()
         if not self._settings.model:
             raise ConfigurationError(
-                "No ASR model configured; pass --model or set SPEECHLOOM_MODEL"
+                "No ASR model is configured; run 'speechloom setup' or pass --model"
             )
         if request.diarize and not self._settings.diar_model:
             raise ConfigurationError(
@@ -59,6 +73,10 @@ class TranscriptionService:
         if (source_language or translate_to) and not self._settings.translation_model:
             raise ConfigurationError(
                 "Translation was requested but no translation model is configured or managed"
+            )
+        if bool(source_language) != bool(translate_to):
+            raise ConfigurationError(
+                "Translation requires both a source language and a target language"
             )
 
         sources = discover_inputs(list(request.inputs), recursive=request.recursive)
@@ -101,7 +119,7 @@ class TranscriptionService:
             diar_model=Path(settings.diar_model).expanduser() if settings.diar_model else None,
             translation_model=(
                 Path(settings.translation_model).expanduser()
-                if settings.translation_model
+                if settings.translation_model and source_language and translate_to
                 else None
             ),
             source_language=source_language,
@@ -114,4 +132,5 @@ class TranscriptionService:
             workers=request.workers if request.workers is not None else settings.workers,
             fail_fast=request.fail_fast,
             shared_model=settings.shared_model,
+            fingerprint_cache=self._fingerprint_cache,
         )

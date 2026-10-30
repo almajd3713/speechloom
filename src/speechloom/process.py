@@ -153,17 +153,16 @@ def run_command(
     if termination_grace < 0:
         raise ValueError("termination_grace must not be negative")
     normalized = tuple(str(part) for part in argv)
-    popen_options: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "env": env,
-        "shell": False,
-    }
-    if os.name == "posix":
-        popen_options["start_new_session"] = True
     try:
-        process = subprocess.Popen(normalized, **popen_options)  # type: ignore[arg-type]
+        process = subprocess.Popen(
+            normalized,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            shell=False,
+            start_new_session=os.name == "posix",
+        )
     except FileNotFoundError as exc:
         raise MissingDependencyError(f"Executable not found: {normalized[0]}") from exc
     group_id = process.pid if os.name == "posix" else None

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hmac
 import ipaddress
 import json
@@ -16,14 +16,15 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from speechloom.config import load_managed_settings
 from speechloom.contracts import ArtifactDetails, JobDetails, TranscriptionRequest
 from speechloom.errors import ConfigurationError
-from speechloom.job_manager import JobEvent, JobManager, ManagedJob, TERMINAL_STATES
+from speechloom.fingerprints import FINGERPRINT_CACHE_FILENAME
+from speechloom.job_manager import TERMINAL_STATES, JobEvent, JobManager, ManagedJob
 from speechloom.runtime import AppPaths
 from speechloom.service import TranscriptionService
 
@@ -40,7 +41,7 @@ from .models import (
 
 
 API_VERSION = "1"
-ERROR_RESPONSES = {
+ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorResponse},
     403: {"model": ErrorResponse},
     404: {"model": ErrorResponse},
@@ -97,6 +98,12 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app
         staging_dir.mkdir(parents=True, exist_ok=True)
+        keep = frozenset(
+            directory.resolve()
+            for job in manager.list(offset=0, limit=max(1, manager.count()))
+            for directory in _job_upload_dirs(job, staging_dir)
+        )
+        _sweep_staging(staging_dir, keep)
         yield
 
     app = FastAPI(
@@ -177,6 +184,7 @@ def create_app(
     )
     async def create_job(request: Request) -> JSONResponse:
         content_type = request.headers.get("content-type", "").lower()
+        request_dir: Path | None = None
         if content_type.startswith("application/json"):
             if not _is_loopback(settings.host):
                 raise ApiError(403, "local_paths_disabled", "Local path input is loopback-only")
@@ -193,7 +201,7 @@ def create_app(
                 ) from exc
             transcription = _request_from_model(payload, policy)
         elif content_type.startswith("multipart/form-data"):
-            transcription = await _request_from_upload(
+            transcription, request_dir = await _request_from_upload(
                 request, staging_dir, settings.max_upload_bytes
             )
         else:
@@ -202,8 +210,13 @@ def create_app(
                 "unsupported_media_type",
                 "Use application/json or multipart/form-data",
             )
-        submitted = manager.submit(transcription)
-        response = JSONResponse(status_code=202, content=_job_payload(submitted))
+        try:
+            submitted = manager.submit(transcription)
+        except Exception:
+            if request_dir is not None:
+                shutil.rmtree(request_dir, ignore_errors=True)
+            raise
+        response = JSONResponse(status_code=202, content=_job_payload(submitted, staging_dir))
         response.headers["Location"] = f"/v1/jobs/{submitted.id}"
         return response
 
@@ -220,7 +233,7 @@ def create_app(
     ) -> dict[str, Any]:
         jobs = manager.list(offset=offset, limit=limit, state=state)
         return {
-            "items": [_job_payload(job) for job in jobs],
+            "items": [_job_payload(job, staging_dir) for job in jobs],
             "offset": offset,
             "limit": limit,
             "total": manager.count(state=state),
@@ -233,7 +246,7 @@ def create_app(
         tags=["jobs"],
     )
     async def get_job(job_id: str) -> dict[str, Any]:
-        return _job_payload(manager.get(job_id))
+        return _job_payload(manager.get(job_id), staging_dir)
 
     @app.delete(
         "/v1/jobs/{job_id}",
@@ -242,7 +255,26 @@ def create_app(
         tags=["jobs"],
     )
     async def cancel_job(job_id: str) -> dict[str, Any]:
-        return _job_payload(manager.cancel(job_id))
+        return _job_payload(manager.cancel(job_id), staging_dir)
+
+    @app.delete(
+        "/v1/jobs/{job_id}/upload",
+        status_code=204,
+        responses=ERROR_RESPONSES,
+        tags=["jobs"],
+    )
+    async def delete_upload(job_id: str) -> Response:
+        job = manager.get(job_id)
+        if job.state not in TERMINAL_STATES:
+            raise ApiError(
+                409, "job_active", "Uploaded media can be deleted after the job finishes"
+            )
+        directories = _job_upload_dirs(job, staging_dir)
+        if not directories:
+            raise ApiError(404, "upload_not_found", "This job has no stored upload")
+        for directory in directories:
+            shutil.rmtree(directory, ignore_errors=True)
+        return Response(status_code=204)
 
     @app.get(
         "/v1/jobs/{job_id}/events",
@@ -290,6 +322,11 @@ def create_app(
     return app
 
 
+def resolve_output_dir(output_dir: str, data_dir: Path) -> Path:
+    path = Path(output_dir).expanduser()
+    return path if path.is_absolute() else data_dir / path
+
+
 def run_server(settings: ServerSettings, *, config_path: Path | None = None) -> None:
     try:
         import uvicorn
@@ -299,7 +336,12 @@ def run_server(settings: ServerSettings, *, config_path: Path | None = None) -> 
     app_paths = AppPaths.from_environment()
     staging_dir = settings.staging_dir or app_paths.data_dir / "staging"
     loaded = load_managed_settings(config_path=config_path)
-    service = TranscriptionService(loaded)
+    loaded = replace(
+        loaded, output_dir=str(resolve_output_dir(loaded.output_dir, app_paths.data_dir))
+    )
+    service = TranscriptionService(
+        loaded, fingerprint_cache=app_paths.cache_dir / FINGERPRINT_CACHE_FILENAME
+    )
     recovery_roots = settings.recovery_roots or (Path(loaded.output_dir),)
     configured = ServerSettings(
         **{
@@ -376,7 +418,7 @@ async def _request_from_upload(
     request: Request,
     staging_root: Path,
     max_upload_bytes: int,
-) -> TranscriptionRequest:
+) -> tuple[TranscriptionRequest, Path]:
     form = await request.form()
     files = [
         value
@@ -402,7 +444,7 @@ async def _store_uploads(
     raw_options: object,
     staging_root: Path,
     max_upload_bytes: int,
-) -> TranscriptionRequest:
+) -> tuple[TranscriptionRequest, Path]:
     try:
         options = json.loads(str(raw_options))
     except json.JSONDecodeError as exc:
@@ -445,7 +487,7 @@ async def _store_uploads(
                 "Upload options failed validation",
                 details=_validation_details(exc),
             ) from exc
-        return TranscriptionRequest(
+        transcription = TranscriptionRequest(
             inputs=tuple(stored),
             output_dir=None,
             formats=tuple(model.formats) if model.formats is not None else None,
@@ -460,6 +502,7 @@ async def _store_uploads(
             workers=model.workers,
             fail_fast=model.fail_fast,
         )
+        return transcription, request_dir
     except Exception:
         shutil.rmtree(request_dir, ignore_errors=True)
         raise
@@ -469,6 +512,36 @@ def _safe_filename(value: str | None, index: int) -> str:
     basename = Path(value or f"upload-{index + 1}").name
     normalized = re.sub(r"[^\w.-]+", "-", basename, flags=re.UNICODE).strip(".-")
     return f"{index + 1:03d}-{normalized or 'upload'}"
+
+
+def _upload_dir(path: Path, staging_dir: Path) -> Path | None:
+    parent = path.parent
+    if not re.fullmatch(r"[0-9a-f]{32}", parent.name):
+        return None
+    if parent.parent.expanduser().resolve() != staging_dir.expanduser().resolve():
+        return None
+    return parent
+
+
+def _job_upload_dirs(job: ManagedJob, staging_dir: Path) -> tuple[Path, ...]:
+    directories: dict[Path, None] = {}
+    for path in job.inputs:
+        directory = _upload_dir(path, staging_dir)
+        if directory is not None and directory.is_dir():
+            directories[directory] = None
+    return tuple(directories)
+
+
+def _sweep_staging(staging_dir: Path, keep: frozenset[Path]) -> None:
+    if not staging_dir.is_dir():
+        return
+    for child in staging_dir.iterdir():
+        if (
+            child.is_dir()
+            and re.fullmatch(r"[0-9a-f]{32}", child.name)
+            and child.resolve() not in keep
+        ):
+            shutil.rmtree(child, ignore_errors=True)
 
 
 def _validation_details(exc: ValidationError) -> list[dict[str, str]]:
@@ -481,7 +554,7 @@ def _validation_details(exc: ValidationError) -> list[dict[str, str]]:
     ]
 
 
-def _job_payload(job: ManagedJob) -> dict[str, Any]:
+def _job_payload(job: ManagedJob, staging_dir: Path) -> dict[str, Any]:
     return {
         "id": job.id,
         "state": job.state,
@@ -501,6 +574,7 @@ def _job_payload(job: ManagedJob) -> dict[str, Any]:
         ],
         "error": job.error,
         "recovered": job.recovered,
+        "has_upload": bool(_job_upload_dirs(job, staging_dir)),
     }
 
 
@@ -615,6 +689,9 @@ class _BoundaryMiddleware:
     def __init__(self, app, *, settings: ServerSettings) -> None:
         self.app = app
         self.settings = settings
+        self.loopback = _is_loopback(settings.host)
+        self.hosts = _loopback_hosts(settings.port)
+        self.origins = _trusted_origins(settings)
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -623,6 +700,17 @@ class _BoundaryMiddleware:
         request_id = uuid4().hex
         scope.setdefault("state", {})["request_id"] = request_id
         request = Request(scope, receive=receive)
+        if self.loopback and request.headers.get("host", "").lower() not in self.hosts:
+            response = _error_response(
+                request, 403, "host_not_allowed", "Host header is not allowed"
+            )
+            await response(scope, receive, send)
+            return
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in self.origins:
+            response = _error_response(request, 403, "origin_not_allowed", "Origin is not allowed")
+            await response(scope, receive, send)
+            return
         content_length = request.headers.get("content-length")
         if content_length:
             try:
@@ -657,6 +745,20 @@ class _BoundaryMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_request_id)
+
+
+def _loopback_hosts(port: int) -> frozenset[str]:
+    return frozenset({f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"})
+
+
+def _trusted_origins(settings: ServerSettings) -> frozenset[str]:
+    origins = set(settings.allowed_origins)
+    if _is_loopback(settings.host):
+        port = settings.port
+        origins.update(
+            {f"http://127.0.0.1:{port}", f"http://localhost:{port}", f"http://[::1]:{port}"}
+        )
+    return frozenset(origins)
 
 
 def _is_loopback(host: str) -> bool:

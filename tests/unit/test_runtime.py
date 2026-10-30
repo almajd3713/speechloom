@@ -10,8 +10,8 @@ from speechloom.errors import ConfigurationError
 from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import (
     AppPaths,
-    InstallState,
     InstalledArtifact,
+    InstallState,
     load_install_state,
     save_install_state,
 )

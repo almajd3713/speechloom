@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import speechloom
 from speechloom import (
@@ -15,6 +16,7 @@ from speechloom import (
     TranscriptionRequest,
     TranscriptionService,
 )
+from speechloom.artifacts import sha256_file
 from speechloom.errors import ConfigurationError
 from speechloom.process import CommandResult
 from tests.contract.test_pipeline import FakeTools
@@ -162,6 +164,138 @@ class TranscriptionServiceTests(unittest.TestCase):
             self.assertEqual(resumed.state, "completed")
             self.assertEqual(tools.inference_calls, 1)
             self.assertEqual(tools.translation_calls, 1)
+
+    def test_installed_translation_model_does_not_require_languages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "model.gguf"
+            translation_model = root / "translate.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            translation_model.write_bytes(b"translation")
+            tools = FakeTools()
+            service = TranscriptionService(
+                Settings(
+                    model=str(model),
+                    translation_model=str(translation_model),
+                    output_dir=str(root / "out"),
+                ),
+                runner=tools,
+            )
+
+            result = service.transcribe(TranscriptionRequest(inputs=(source,)))[0]
+
+            self.assertEqual(result.state, "completed")
+            self.assertIsNone(result.error)
+            self.assertEqual(tools.inference_calls, 1)
+            self.assertEqual(tools.translation_calls, 0)
+            self.assertFalse((Path(result.job_dir) / "translation.en.json").exists())
+            manifest = json.loads(
+                (Path(result.job_dir) / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertIsNone(manifest["translation_model"])
+
+    def test_request_languages_enable_installed_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "russian.mp4"
+            model = root / "model.gguf"
+            translation_model = root / "translate.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            translation_model.write_bytes(b"translation")
+            tools = FakeTools()
+            service = TranscriptionService(
+                Settings(
+                    model=str(model),
+                    translation_model=str(translation_model),
+                    output_dir=str(root / "out"),
+                ),
+                runner=tools,
+            )
+
+            result = service.transcribe(
+                TranscriptionRequest(inputs=(source,), source_language="ru", translate_to="en")
+            )[0]
+
+            self.assertEqual(result.state, "completed")
+            self.assertEqual(tools.translation_calls, 1)
+            self.assertTrue((Path(result.job_dir) / "translation.en.json").is_file())
+
+    def test_single_translation_language_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "model.gguf"
+            translation_model = root / "translate.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            translation_model.write_bytes(b"translation")
+            tools = FakeTools()
+            service = TranscriptionService(
+                Settings(
+                    model=str(model),
+                    translation_model=str(translation_model),
+                    output_dir=str(root / "out"),
+                ),
+                runner=tools,
+            )
+
+            with self.assertRaisesRegex(
+                ConfigurationError, "requires both a source language and a target language"
+            ):
+                service.transcribe(TranscriptionRequest(inputs=(source,), translate_to="en"))
+
+            self.assertEqual(tools.inference_calls, 0)
+
+    def test_missing_model_points_to_setup(self) -> None:
+        service = TranscriptionService(Settings())
+
+        with self.assertRaises(ConfigurationError) as raised:
+            service.transcribe(TranscriptionRequest(inputs=(Path("recording.mp4"),)))
+
+        self.assertEqual(
+            str(raised.exception),
+            "No ASR model is configured; run 'speechloom setup' or pass --model",
+        )
+
+    def test_default_config_caches_fingerprints_in_cache_home(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "model.gguf"
+            config = root / "config.ini"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            config.write_text(
+                "[speechloom]\n"
+                f"model = {model}\n"
+                f"output_dir = {root / 'output'}\n",
+                encoding="utf-8",
+            )
+            environment = {
+                "SPEECHLOOM_CONFIG_HOME": str(root / "config"),
+                "SPEECHLOOM_DATA_HOME": str(root / "data"),
+                "SPEECHLOOM_CACHE_HOME": str(root / "cache"),
+            }
+            service = TranscriptionService.from_default_config(
+                config_path=config,
+                env=environment,
+                runner=FakeTools(),
+            )
+
+            first = service.transcribe(TranscriptionRequest(inputs=(source,)))[0]
+
+            self.assertEqual(first.state, "completed")
+            cache = root / "cache" / "fingerprints.json"
+            entries = json.loads(cache.read_text(encoding="utf-8"))["entries"]
+            self.assertIn(str(model.resolve()), entries)
+            self.assertIn(str(source.resolve()), entries)
+            with patch("speechloom.fingerprints.sha256_file", wraps=sha256_file) as hashing:
+                second = service.transcribe(TranscriptionRequest(inputs=(source,)))[0]
+            self.assertTrue(second.skipped)
+            self.assertEqual(hashing.call_count, 0)
 
     def test_python_caller_can_run_doctor_without_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

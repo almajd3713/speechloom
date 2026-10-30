@@ -1,8 +1,7 @@
-# Repository-local setup fallback
+# Repository-local setup
 
-This is the fallback installation path for Speechloom while the managed `speechloom
-setup` workflow is being introduced. It keeps the native runtime, models, and build
-tools inside the checkout and does not modify XDG-managed application data.
+This development setup keeps the native runtime, models and build tools inside the
+checkout (`.runtime/`) and does not touch the per-user Speechloom directories.
 
 ## Install
 
@@ -35,6 +34,8 @@ For CUDA with translation support:
 Copy `config.example.ini` to the ignored `config.ini`, then point `nemo_speech`,
 `model`, `translation_model` when used, and `device` at the selected repository-local
 runtime and models.
+Use absolute paths, because relative paths in a configuration file are resolved from
+the directory you run Speechloom in.
 
 ## Verify and use
 
@@ -43,7 +44,9 @@ runtime and models.
 .venv/bin/speechloom --config config.ini transcribe recording.mp4
 ```
 
-Rerunning a bootstrap script is safe for its pinned target. Do not delete a working
-`.runtime` directory during migration; the managed setup workflow must import or coexist
-with it non-destructively. Existing transcript job directories remain independent of the
-installation method.
+Rerunning a bootstrap script is safe for its pinned target. When `speechloom setup`
+runs from an editable install of this checkout, it imports the `.runtime` engine and
+models in place and never moves or deletes them. To use another checkout's scripts,
+set `SPEECHLOOM_REPOSITORY_ROOT` to its path; setup never uses scripts from the
+current working directory. Existing transcript job directories remain independent of
+the installation method.

@@ -91,6 +91,7 @@ echo "Installing isolated converter dependencies..."
     -r "${source_dir}/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt"
 
 partial="${destination}.part"
+trap 'rm -rf "$temporary_root"; rm -f "$partial"' EXIT
 echo "Downloading ${model_id}@${model_revision} and converting to Q8_0..."
 "${converter_env}/bin/python" "${source_dir}/convert_model.py" "$model_id" \
     --architecture nmt \

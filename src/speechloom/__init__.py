@@ -19,10 +19,11 @@ from .errors import (
     JobNotFoundError,
     JobQueueFullError,
 )
-from .jobs import JobResult
 from .job_manager import JobEvent, JobManager, ManagedJob
+from .jobs import JobResult
 from .service import TranscriptionService
 from .setup import SetupManager, SetupRequest, SetupResult, SetupStatus
+
 
 __all__ = [
     "ArtifactDetails",

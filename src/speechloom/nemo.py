@@ -8,12 +8,14 @@ from pathlib import Path
 import tempfile
 from typing import Any, Callable, Iterable
 
-from .errors import InferenceError, ModelError, UnsupportedFeatureError
+from .errors import InferenceError, ModelError, PipelineError, UnsupportedFeatureError
 from .process import CommandFailed, CommandResult, run_command
 from .schema import Transcript, Word
 
 
 Runner = Callable[..., CommandResult]
+# Transcripts of long recordings exceed the default capture limit of run_command.
+NATIVE_OUTPUT_LIMIT = 256 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,7 @@ def transcribe(
         argv.extend(["--diar-model", str(options.diar_model)])
 
     try:
-        result = runner(argv)
+        result = runner(argv, max_output_chars=NATIVE_OUTPUT_LIMIT)
     except CommandFailed as exc:
         raise _map_native_failure(exc) from exc
     payload = _parse_json_output(result.stdout)
@@ -119,7 +121,7 @@ def translate_texts(
     if not normalized or any(not text for text in normalized):
         raise InferenceError("Translation inputs must contain text")
 
-    with tempfile.TemporaryDirectory(prefix="parakeet-translation-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="speechloom-translation-") as temporary:
         input_path = Path(temporary) / "segments.txt"
         input_path.write_text("\n".join(normalized) + "\n", encoding="utf-8")
         argv = [
@@ -134,7 +136,7 @@ def translate_texts(
         if options.device != "auto":
             argv.extend(["--device", options.device])
         try:
-            result = runner(argv)
+            result = runner(argv, max_output_chars=NATIVE_OUTPUT_LIMIT)
         except CommandFailed as exc:
             raise _map_translation_failure(exc.result) from exc
 
@@ -183,7 +185,7 @@ def adapt_payload(payload: Any, *, duration: float | None = None) -> Transcript:
     return transcript
 
 
-def map_native_failure(result: CommandResult) -> InferenceError:
+def map_native_failure(result: CommandResult) -> PipelineError:
     """Map a non-zero native result without requiring CommandFailed."""
 
     return _map_native_result(result)
@@ -275,11 +277,11 @@ def _join_words(words: list[Word]) -> str:
     return text
 
 
-def _map_native_failure(exc: CommandFailed) -> InferenceError:
+def _map_native_failure(exc: CommandFailed) -> PipelineError:
     return _map_native_result(exc.result)
 
 
-def _map_native_result(result: CommandResult) -> InferenceError:
+def _map_native_result(result: CommandResult) -> PipelineError:
     code = result.returncode
     diagnostic = result.stderr.strip() or result.stdout.strip() or "unknown inference failure"
     if code == 3:
@@ -289,7 +291,7 @@ def _map_native_result(result: CommandResult) -> InferenceError:
     return InferenceError(f"NeMo transcription failed: {diagnostic}", native_exit_code=code)
 
 
-def _map_translation_failure(result: CommandResult) -> InferenceError:
+def _map_translation_failure(result: CommandResult) -> PipelineError:
     code = result.returncode
     diagnostic = result.stderr.strip() or result.stdout.strip() or "unknown translation failure"
     if code == 3:

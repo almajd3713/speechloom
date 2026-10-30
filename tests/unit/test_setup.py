@@ -10,14 +10,15 @@ import unittest
 from unittest.mock import patch
 
 from speechloom import CancellationController, StageEvent
+from speechloom import setup as setup_module
+from speechloom.config import load_managed_settings
 from speechloom.doctor import DoctorReport
 from speechloom.errors import CancellationError, SetupError
-from speechloom.process import CommandResult
-from speechloom.process import run_command
+from speechloom.process import CommandResult, run_command
 from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import AppPaths, load_install_state
 from speechloom.runtime_archive import RuntimeArchiveMetadata, build_runtime_archive
-from speechloom.setup import SetupManager, SetupRequest
+from speechloom.setup import GENERATED_CONFIG, SetupManager, SetupRequest, _find_repository_root
 
 
 class FakeInstaller:
@@ -78,15 +79,58 @@ def _registry(asr_content: bytes, diar_content: bytes = b"diar") -> Registry:
     )
 
 
-def _paths(root: Path) -> AppPaths:
-    return AppPaths.from_environment(
-        {
-            "SPEECHLOOM_CONFIG_HOME": str(root / "config"),
-            "SPEECHLOOM_DATA_HOME": str(root / "data"),
-            "SPEECHLOOM_CACHE_HOME": str(root / "cache"),
-        },
-        home=root,
+def _prebuilt_registry(root: Path, registry: Registry) -> tuple[Registry, str, bytes]:
+    prefix = root / "archive-prefix"
+    executable = prefix / registry.runtime.executable
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"prebuilt-runtime")
+    executable.chmod(0o755)
+    license_file = prefix / "share/licenses/nemo-speech/LICENSE"
+    license_file.parent.mkdir(parents=True)
+    license_file.write_text("fixture license\n", encoding="utf-8")
+    filename = "speechloom-runtime-fixture-cpu-linux-x86_64.tar.gz"
+    archive_path = root / filename
+    archive_sha = build_runtime_archive(
+        prefix,
+        archive_path,
+        RuntimeArchiveMetadata(
+            backend="cpu",
+            system="linux",
+            architecture="x86_64",
+            revision=registry.runtime.revision,
+            features=("asr",),
+            executable=registry.runtime.executable,
+        ),
     )
+    archive = RuntimeArchiveSpec(
+        backend="cpu",
+        system="linux",
+        architecture="x86_64",
+        filename=filename,
+        url=f"https://example.invalid/{filename}",
+        sha256=archive_sha,
+        features=("asr",),
+        minimum_free_bytes=0,
+    )
+    prebuilt = replace(registry, runtime=replace(registry.runtime, archives=(archive,)))
+    return prebuilt, filename, archive_path.read_bytes()
+
+
+def _environment(root: Path) -> dict[str, str]:
+    return {
+        "SPEECHLOOM_CONFIG_HOME": str(root / "config"),
+        "SPEECHLOOM_DATA_HOME": str(root / "data"),
+        "SPEECHLOOM_CACHE_HOME": str(root / "cache"),
+    }
+
+
+def _paths(root: Path) -> AppPaths:
+    return AppPaths.from_environment(_environment(root), home=root)
+
+
+def _working_gpu(argv, **kwargs) -> CommandResult:
+    del kwargs
+    return CommandResult(tuple(str(part) for part in argv), 0, "GPU 0: fixture", "")
 
 
 class SetupManagerTests(unittest.TestCase):
@@ -101,7 +145,7 @@ class SetupManagerTests(unittest.TestCase):
 
         manager = SetupManager(runner=blocked_gpu, repository_root=Path("/missing"))
 
-        self.assertEqual(manager._resolve_backend("auto", None), "cpu")
+        self.assertEqual(manager._resolve_backend("auto", None, ()), "cpu")
 
     def test_setup_builds_once_and_rerun_only_verifies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -357,6 +401,234 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual(Path(diar.path).read_bytes(), b"diar")
             self.assertIn("installed diarization model", result.actions)
 
+    def test_diarization_setup_uses_prebuilt_runtime_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "download_artifact.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            registry, filename, archive = _prebuilt_registry(root, _registry(b"asr", b"diar"))
+            installer = FakeInstaller(b"asr", b"diar", artifacts={filename: archive})
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=registry,
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            result = manager.setup(SetupRequest(backend="cpu", features=("diarization",)))
+
+            self.assertIn("installed cpu prebuilt runtime", result.actions)
+            self.assertIn("installed diarization model", result.actions)
+            self.assertEqual(result.state.runtime.source, "prebuilt")
+            self.assertFalse(
+                any("bootstrap_runtime.sh" in part for call in installer.calls for part in call)
+            )
+
+    def test_adding_diarization_reuses_installed_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            installer = FakeInstaller(b"asr", b"diar")
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr", b"diar"),
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            manager.setup(SetupRequest(backend="cpu"))
+            second = manager.setup(SetupRequest(backend="cpu", features=("diarization",)))
+
+            builds = [
+                call for call in installer.calls if any("bootstrap_runtime.sh" in p for p in call)
+            ]
+            self.assertEqual(second.actions, ("installed diarization model",))
+            self.assertEqual(len(builds), 1)
+
+    def test_rerunning_setup_keeps_installed_features(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr", b"diar"),
+                runner=FakeInstaller(b"asr", b"diar"),
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+            messages: list[str] = []
+
+            manager.setup(SetupRequest(backend="cpu", features=("diarization",)))
+            second = manager.setup(SetupRequest(backend="cpu"), on_stage=messages.append)
+
+            self.assertEqual(second.state.features, ("diarization",))
+            self.assertEqual([model.kind for model in second.state.models], ["asr", "diarization"])
+            self.assertEqual(second.actions, ())
+            self.assertIn("keeping installed features: diarization", messages)
+
+    def _cuda_registry(self, archives: tuple[RuntimeArchiveSpec, ...]) -> Registry:
+        registry = Registry.load()
+        return replace(registry, runtime=replace(registry.runtime, archives=archives))
+
+    @patch("speechloom.setup.platform.machine", return_value="x86_64")
+    @patch("speechloom.setup.platform.system", return_value="Linux")
+    @patch(
+        "speechloom.setup._command_available",
+        side_effect=lambda command: command == "nvidia-smi",
+    )
+    def test_auto_backend_prefers_prebuilt_cuda_without_toolkit(self, *mocks) -> None:
+        del mocks
+        archive = RuntimeArchiveSpec(
+            backend="cuda",
+            system="linux",
+            architecture="x86_64",
+            filename="cuda-fixture.tar.gz",
+            url="https://example.invalid/cuda-fixture.tar.gz",
+            sha256="b" * 64,
+            features=("asr", "translation"),
+            minimum_free_bytes=0,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SetupManager(
+                paths=_paths(Path(directory)),
+                registry=self._cuda_registry((archive,)),
+                runner=_working_gpu,
+                repository_root=Path("/missing"),
+            )
+
+            self.assertEqual(manager._resolve_backend("auto", None, ()), "cuda")
+            self.assertEqual(manager._resolve_backend("auto", None, ("diarization",)), "cuda")
+
+    @patch("speechloom.setup.platform.machine", return_value="x86_64")
+    @patch("speechloom.setup.platform.system", return_value="Linux")
+    @patch(
+        "speechloom.setup._command_available",
+        side_effect=lambda command: command == "nvidia-smi",
+    )
+    def test_auto_backend_without_cuda_archive_or_toolkit_uses_cpu(self, *mocks) -> None:
+        del mocks
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SetupManager(
+                paths=_paths(Path(directory)),
+                registry=self._cuda_registry(()),
+                runner=_working_gpu,
+                repository_root=Path("/missing"),
+            )
+
+            self.assertEqual(manager._resolve_backend("auto", None, ()), "cpu")
+
+    def _configured_manager(self, root: Path) -> SetupManager:
+        scripts = root / "repo/scripts"
+        scripts.mkdir(parents=True)
+        for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+            (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+        return SetupManager(
+            paths=_paths(root),
+            registry=_registry(b"asr"),
+            runner=FakeInstaller(b"asr"),
+            doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+            repository_root=root / "repo",
+        )
+
+    def test_generated_configuration_leaves_paths_to_install_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._configured_manager(root)
+
+            result = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertEqual(manager.config_path.read_text(encoding="utf-8"), GENERATED_CONFIG)
+            settings = load_managed_settings(env=_environment(root))
+            self.assertEqual(settings.nemo_speech, result.state.runtime.path)
+            self.assertEqual(settings.model, result.state.model("asr").path)
+            self.assertEqual(settings.device, "cpu")
+
+    def test_setup_removes_paths_written_by_earlier_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._configured_manager(root)
+            first = manager.setup(SetupRequest(backend="cpu"))
+            manager.config_path.write_text(
+                "[speechloom]\n"
+                f"nemo_speech = {first.state.runtime.path}\n"
+                f"model = {first.state.model('asr').path}\n"
+                "device = cpu\n"
+                "output_dir = transcripts\n"
+                "formats = json,txt,srt,vtt\n"
+                "workers = 2\n",
+                encoding="utf-8",
+            )
+
+            second = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertEqual(
+                manager.config_path.read_text(encoding="utf-8"),
+                "[speechloom]\noutput_dir = transcripts\nformats = json,txt,srt,vtt\nworkers = 2\n",
+            )
+            self.assertEqual(second.actions, ("removed setup-written paths from configuration",))
+
+    def test_setup_keeps_user_configured_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = self._configured_manager(root)
+            manager.setup(SetupRequest(backend="cpu"))
+            custom = "[speechloom]\nmodel = /custom/model.gguf\ndevice = cuda\n"
+            manager.config_path.write_text(custom, encoding="utf-8")
+
+            second = manager.setup(SetupRequest(backend="cpu"))
+
+            self.assertEqual(manager.config_path.read_text(encoding="utf-8"), custom)
+            self.assertEqual(second.actions, ())
+
+    def test_repository_root_ignores_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "scripts").mkdir()
+            (root / "scripts/bootstrap_runtime.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            nested = root / "a/b"
+            nested.mkdir(parents=True)
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if key != "SPEECHLOOM_REPOSITORY_ROOT"
+            }
+            original = Path.cwd()
+
+            with patch.dict(os.environ, environment, clear=True):
+                os.chdir(nested)
+                try:
+                    found = _find_repository_root()
+                finally:
+                    os.chdir(original)
+
+            self.assertNotEqual(found, root)
+            self.assertIn(found, (None, Path(setup_module.__file__).resolve().parents[2]))
+
+    def test_repository_root_honours_explicit_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with_scripts = root / "with"
+            (with_scripts / "scripts").mkdir(parents=True)
+            (with_scripts / "scripts/bootstrap_runtime.sh").write_text(
+                "#!/bin/sh\n", encoding="utf-8"
+            )
+            without_scripts = root / "without"
+            without_scripts.mkdir()
+
+            with patch.dict(os.environ, {"SPEECHLOOM_REPOSITORY_ROOT": str(with_scripts)}):
+                self.assertEqual(_find_repository_root(), with_scripts)
+            with patch.dict(os.environ, {"SPEECHLOOM_REPOSITORY_ROOT": str(without_scripts)}):
+                self.assertIsNone(_find_repository_root())
+
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -473,6 +745,52 @@ class DownloadArtifactScriptTests(unittest.TestCase):
             self.assertEqual(
                 (cache / "fixture.gguf.part").read_bytes(), b"partial-download"
             )
+
+    def test_existing_mismatched_artifact_explains_the_fix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\nprintf fixture-model > \"$output\"\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            script = Path(__file__).resolve().parents[2] / "scripts/download_artifact.sh"
+            destination = root / "models"
+            cache = root / "cache"
+            destination.mkdir()
+            (destination / "fixture.gguf").write_bytes(b"other")
+            environment = {
+                **os.environ,
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+            }
+
+            result = run_command(
+                [
+                    "bash",
+                    str(script),
+                    "--destination",
+                    str(destination),
+                    "--download-cache",
+                    str(cache),
+                    "--url",
+                    "https://models.example/fixture.gguf",
+                    "--filename",
+                    "fixture.gguf",
+                    "--sha256",
+                    hashlib.sha256(b"fixture-model").hexdigest(),
+                ],
+                env=environment,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Existing artifact checksum does not match:", result.stderr)
+            self.assertIn("Delete it and rerun speechloom setup.", result.stderr)
+            self.assertEqual((destination / "fixture.gguf").read_bytes(), b"other")
+            self.assertFalse((cache / "fixture.gguf.part").exists())
 
 
 if __name__ == "__main__":

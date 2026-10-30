@@ -23,8 +23,8 @@ from .process import CommandResult, run_command
 from .registry import ModelSpec, Registry, RuntimeArchiveSpec
 from .runtime import (
     AppPaths,
-    InstallState,
     InstalledArtifact,
+    InstallState,
     load_install_state,
     save_install_state,
 )
@@ -39,6 +39,14 @@ Runner = Callable[..., CommandResult]
 StageSink = Callable[[str], None]
 EventSink = Callable[[StageEvent], None]
 Doctor = Callable[..., DoctorReport]
+RUNTIME_FEATURES: frozenset[str] = frozenset({"translation"})
+GENERATED_CONFIG = (
+    "[speechloom]\n"
+    "# Written by `speechloom setup`. Engine and model paths are read from\n"
+    "# install.json in the Speechloom data directory. Set nemo_speech, model or\n"
+    "# device here only to override the managed installation.\n"
+)
+REPOSITORY_ROOT_ENV = "SPEECHLOOM_REPOSITORY_ROOT"
 
 
 @dataclass(frozen=True)
@@ -204,28 +212,34 @@ class SetupManager:
     ) -> SetupResult:
         self.paths.create()
         old_state = load_install_state(self.paths.state_file)
-        backend = self._resolve_backend(request.backend, old_state)
+        features = tuple(
+            sorted(set(request.features) | set(old_state.features if old_state else ()))
+        )
+        if set(features) != set(request.features):
+            kept = sorted(set(features) - set(request.features))
+            _emit(on_stage, f"keeping installed features: {', '.join(kept)}")
+        backend = self._resolve_backend(request.backend, old_state, features)
         actions: list[str] = []
 
         runtime = self._reuse_runtime(
             old_state,
             backend,
-            request.features,
+            features,
             from_source=request.from_source,
         )
         if runtime is None and not request.from_source:
-            runtime = self._legacy_runtime(backend, request.features)
+            runtime = self._legacy_runtime(backend, features)
             if runtime is not None:
                 actions.append("imported legacy runtime")
         if runtime is None and not request.from_source:
-            archive = self._runtime_archive(backend, request.features)
+            archive = self._runtime_archive(backend, features)
             if archive is not None:
                 _emit(on_stage, f"installing {backend} runtime archive")
                 runtime = self._install_runtime_archive(archive)
                 actions.append(f"installed {backend} prebuilt runtime")
         if runtime is None:
             _emit(on_stage, f"building {backend} runtime")
-            runtime = self._build_runtime(backend, request.features)
+            runtime = self._build_runtime(backend, features)
             actions.append(f"built {backend} runtime")
 
         installed_models: list[InstalledArtifact] = []
@@ -239,7 +253,7 @@ class SetupManager:
             actions.append("imported legacy ASR model")
         installed_models.append(asr)
 
-        if "diarization" in request.features:
+        if "diarization" in features:
             diar_spec = self.registry.model("diarization")
             diar = self._reuse_model(old_state, diar_spec) or self._legacy_model(diar_spec)
             if diar is None:
@@ -250,7 +264,7 @@ class SetupManager:
                 actions.append("imported legacy diarization model")
             installed_models.append(diar)
 
-        if "translation" in request.features:
+        if "translation" in features:
             translation_spec = self.registry.model("translation")
             translation = (
                 self._reuse_model(old_state, translation_spec)
@@ -266,17 +280,20 @@ class SetupManager:
 
         if not self.config_path.exists():
             _emit(on_stage, "writing default configuration")
-            self._write_config(runtime, asr, backend)
+            self._write_config()
             actions.append("created default configuration")
+        elif old_state is not None and self._remove_generated_paths(old_state):
+            _emit(on_stage, "removed setup-written paths from configuration")
+            actions.append("removed setup-written paths from configuration")
 
         state = InstallState(
             backend=backend,
-            features=request.features,
+            features=features,
             config_path=str(self.config_path),
             runtime=runtime,
             models=tuple(installed_models),
             platform=self._platform_details(),
-            completed_stages=("runtime", "asr", "config") + request.features,
+            completed_stages=("runtime", "asr", "config") + features,
             retained_cache=self._retained_cache(),
             created_at=old_state.created_at if old_state else _timestamp(),
             updated_at=_timestamp(),
@@ -367,7 +384,12 @@ class SetupManager:
                 removed.append(target)
         return tuple(removed)
 
-    def _resolve_backend(self, requested: str, state: InstallState | None) -> str:
+    def _resolve_backend(
+        self,
+        requested: str,
+        state: InstallState | None,
+        features: Sequence[str],
+    ) -> str:
         if requested in {"cpu", "vulkan"}:
             return requested
         gpu_usable = self._gpu_usable()
@@ -384,6 +406,8 @@ class SetupManager:
         ):
             return state.backend
         if self._legacy_executable("cuda") and gpu_usable:
+            return "cuda"
+        if gpu_usable and self._runtime_archive("cuda", features) is not None:
             return "cuda"
         if gpu_usable and _command_available("nvcc"):
             return "cuda"
@@ -409,7 +433,7 @@ class SetupManager:
     ) -> InstalledArtifact | None:
         if not state or state.backend != backend or state.runtime is None:
             return None
-        if not set(features).issubset(state.features):
+        if not set(_runtime_features(features)).issubset(state.features):
             return None
         if from_source and state.runtime.source != "source-build":
             return None
@@ -485,7 +509,7 @@ class SetupManager:
             backend,
             platform.system().lower(),
             machine,
-            tuple(features),
+            _runtime_features(features),
         )
 
     def _install_runtime_archive(self, spec: RuntimeArchiveSpec) -> InstalledArtifact:
@@ -664,21 +688,32 @@ class SetupManager:
                 f"Not enough free space for installation: need {minimum} bytes, have {free}"
             )
 
-    def _write_config(
-        self,
-        runtime: InstalledArtifact,
-        asr: InstalledArtifact,
-        backend: str,
-    ) -> None:
-        content = (
-            "[speechloom]\n"
-            f"nemo_speech = {runtime.path}\n"
-            f"model = {asr.path}\n"
-            f"device = {backend}\n"
-            "output_dir = transcripts\n"
-            "formats = json,txt,srt,vtt\n"
-        )
-        atomic_write_text(self.config_path, content)
+    def _write_config(self) -> None:
+        atomic_write_text(self.config_path, GENERATED_CONFIG)
+
+    def _remove_generated_paths(self, state: InstallState) -> bool:
+        if not self.config_path.exists():
+            return False
+        lines = self.config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        asr = state.model("asr")
+        recorded = {
+            "nemo_speech": state.runtime.path if state.runtime else None,
+            "model": asr.path if asr else None,
+            "device": state.backend,
+        }
+        kept: list[str] = []
+        for line in lines:
+            match = re.fullmatch(
+                r"\s*(nemo_speech|model|device)\s*=\s*(.*?)\s*",
+                line.rstrip("\r\n"),
+            )
+            if match and recorded[match.group(1)] == match.group(2):
+                continue
+            kept.append(line)
+        if len(kept) == len(lines):
+            return False
+        atomic_write_text(self.config_path, "".join(kept))
+        return True
 
     def _settings(self, state: InstallState) -> Settings:
         assert state.runtime is not None
@@ -758,7 +793,7 @@ class SetupManager:
             None,
         )
         if entry is not None:
-            candidate = Path(package.locate_file(entry))
+            candidate = Path(str(package.locate_file(entry)))
             if candidate.is_file():
                 return candidate
         raise SetupError(f"Speechloom installation script is missing: {name}")
@@ -793,16 +828,21 @@ class SetupManager:
 
 
 def _find_repository_root() -> Path | None:
-    candidates = [Path.cwd(), Path(__file__).resolve().parents[2]]
-    for start in candidates:
-        for path in (start, *start.parents):
-            if (path / "scripts/bootstrap_runtime.sh").is_file():
-                return path
+    override = os.environ.get(REPOSITORY_ROOT_ENV, "").strip()
+    candidate = (
+        Path(override).expanduser().resolve() if override else Path(__file__).resolve().parents[2]
+    )
+    if (candidate / "scripts/bootstrap_runtime.sh").is_file():
+        return candidate
     return None
 
 
 def _command_available(command: str) -> bool:
     return shutil.which(command) is not None
+
+
+def _runtime_features(features: Sequence[str]) -> tuple[str, ...]:
+    return tuple(sorted(feature for feature in features if feature in RUNTIME_FEATURES))
 
 
 def _emit(sink: StageSink | None, message: str) -> None:

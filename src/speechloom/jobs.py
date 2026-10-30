@@ -27,6 +27,7 @@ from .errors import (
     InferenceError,
     PipelineError,
 )
+from .fingerprints import FingerprintCache
 from .media import can_passthrough_wav, normalize_audio, probe_media, select_audio_stream
 from .nemo import (
     NemoOptions,
@@ -49,6 +50,8 @@ from .schema import SCHEMA_VERSION, Transcript, TranslatedSegment, Translation
 
 
 MANIFEST_SCHEMA_VERSION = 1
+# Bump only when the same inputs would produce different artifacts.
+PIPELINE_SEMANTICS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class PipelineOptions:
     workers: int = 1
     fail_fast: bool = False
     shared_model: bool = True
+    fingerprint_cache: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +139,11 @@ class Pipeline:
         self._event_lock = threading.RLock()
         self.runner = self._run_command
         self._identity_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+        self._fingerprints = (
+            FingerprintCache(options.fingerprint_cache)
+            if options.fingerprint_cache is not None
+            else None
+        )
         self._tool_versions: dict[str, str] | None = None
 
     def run(self, sources: list[Path]) -> list[JobResult]:
@@ -258,7 +267,7 @@ class Pipeline:
             return results
 
         results_by_source: dict[str, JobResult] = {}
-        with ThreadPoolExecutor(max_workers=self.options.workers, thread_name_prefix="parakeet") as executor:
+        with ThreadPoolExecutor(max_workers=self.options.workers, thread_name_prefix="speechloom") as executor:
             future_map = {executor.submit(self.run_one, source): source for source in sources}
             for future in as_completed(future_map):
                 source = future_map[future]
@@ -339,7 +348,7 @@ class Pipeline:
             )
         output_root = self.options.output_dir.expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".parakeet-batch-", dir=output_root) as temporary:
+        with tempfile.TemporaryDirectory(prefix=".speechloom-batch-", dir=output_root) as temporary:
             staging_root = Path(temporary)
             input_dir = staging_root / "input"
             output_dir = staging_root / "output"
@@ -498,7 +507,11 @@ class Pipeline:
             model=model_identity,
             diar_model=diar_identity,
             translation_model=translation_identity,
-            options={**semantic, "requested_formats": list(self.options.formats)},
+            options={
+                **semantic,
+                "pipeline_version": __version__,
+                "requested_formats": list(self.options.formats),
+            },
             tools=tool_versions,
         )
         manifest.pop("error", None)
@@ -881,7 +894,7 @@ class Pipeline:
         tool_versions: dict[str, str],
     ) -> dict[str, Any]:
         return {
-            "pipeline_version": __version__,
+            "semantics_version": PIPELINE_SEMANTICS_VERSION,
             "transcript_schema": SCHEMA_VERSION,
             "model_sha256": model_identity["sha256"],
             "diar_model_sha256": diar_identity["sha256"] if diar_identity else None,
@@ -899,7 +912,11 @@ class Pipeline:
         stat = resolved.stat()
         key = (str(resolved), stat.st_size, stat.st_mtime_ns)
         if key not in self._identity_cache:
-            self._identity_cache[key] = file_identity(resolved)
+            self._identity_cache[key] = (
+                self._fingerprints.identity(resolved)
+                if self._fingerprints is not None
+                else file_identity(resolved)
+            )
         return self._identity_cache[key]
 
     def _versions(self) -> dict[str, str]:

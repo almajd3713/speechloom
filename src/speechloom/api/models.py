@@ -19,7 +19,7 @@ class JobCreateRequest(BaseModel):
     resume: bool | None = None
     force: bool = False
     keep_audio: bool | None = None
-    workers: int | None = Field(default=None, ge=1)
+    workers: int | None = Field(default=None, ge=1, le=8)
     fail_fast: bool = False
 
 
@@ -41,6 +41,7 @@ class JobResponse(BaseModel):
     results: list[ResultResponse]
     error: str | None = None
     recovered: bool
+    has_upload: bool
 
 
 class JobListResponse(BaseModel):

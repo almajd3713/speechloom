@@ -1,147 +1,203 @@
 # Speechloom
 
-Local audio and video transcription using
-[NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp) and Parakeet TDT
-0.6B v3. Outputs JSON, plain text, SRT, and WebVTT.
+Offline transcription and subtitles for audio and video, on your own machine.
 
-## Requirements
+Speechloom turns recordings into timestamped transcripts and subtitles (TXT, SRT,
+WebVTT and JSON) with NVIDIA's Parakeet TDT 0.6B v3 model, run locally through
+[NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp). It uses an NVIDIA GPU
+when one is available and the CPU otherwise. Your media never leaves your computer.
 
-- Python 3.10+
-- FFmpeg and FFprobe
-- A supported native runtime profile for managed setup
-- Git, a C++17 compiler, Ninja, and CMake 3.26–3.x only for source builds
-- CUDA and `nvcc` only for CUDA source builds
+[![PyPI](https://img.shields.io/pypi/v/speechloom)](https://pypi.org/project/speechloom/)
+[![Python](https://img.shields.io/pypi/pyversions/speechloom)](https://pypi.org/project/speechloom/)
+[![CI](https://github.com/almajd3713/speechloom/actions/workflows/python-package.yml/badge.svg)](https://github.com/almajd3713/speechloom/actions/workflows/python-package.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/almajd3713/speechloom/blob/main/LICENSE)
 
-## Setup
+<!-- demo: replace this comment with ![Speechloom transcribing a video](https://raw.githubusercontent.com/almajd3713/speechloom/main/docs/media/demo.gif) once docs/media/demo.gif exists -->
 
-Install the Python package from PyPI:
+## Why Speechloom
+
+- **Private.** Transcription runs entirely offline. Only `speechloom setup` downloads
+  anything: the engine and the models.
+- **Fast on a laptop GPU.** A 10-minute recording takes about 17 seconds on an RTX 4070
+  Laptop GPU, 34 times faster than real time, using about 4 GB of GPU memory. See the
+  [benchmarks](https://github.com/almajd3713/speechloom/blob/main/docs/benchmarks.md).
+- **25 European languages**, detected automatically: Bulgarian, Croatian, Czech, Danish,
+  Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian,
+  Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish,
+  Swedish and Ukrainian.
+- **Translation and speaker labels, when you want them.** Translate transcripts between
+  English and 36 other languages, including Arabic, Chinese and Japanese, with Riva
+  Translate 4B. Label up to four speakers with Sortformer.
+- **Safe to rerun.** Every job is fingerprinted by its input and settings. Finished work
+  is skipped, interrupted work resumes, and results are never overwritten without
+  `--force`.
+- **Usable from code.** A typed Python API and an optional local HTTP API share the
+  engine with the command line.
+
+## Quick start
 
 ```bash
 pipx install speechloom
-# or: python3 -m pip install speechloom
-```
-
-Install the runtime and ASR model:
-
-```bash
 speechloom setup
+speechloom transcribe interview.mp4
 ```
 
-Speechloom selects a usable backend from the capabilities available on the host.
-You can also select one explicitly:
+`speechloom setup` installs the CUDA engine when `nvidia-smi` works and the CPU engine
+otherwise; the CUDA toolkit is not needed. Results land in a job directory under
+`transcripts/` in the current directory:
+
+```text
+transcripts/interview-<job id>/
+├── manifest.json       job state, settings, checksums and timings
+├── transcript.json     canonical transcript with word timestamps
+├── transcript.txt
+├── subtitles.srt
+└── subtitles.vtt
+```
+
+```text
+1
+00:00:00,240 --> 00:00:04,479
+going along slushy country roads and
+speaking to damp audiences in drafty
+
+2
+00:00:04,480 --> 00:00:07,119
+schoolrooms day after day for a fortnight.
+```
+
+## Requirements
+
+- Linux on x86_64 (WSL2 works)
+- Python 3.10 or newer
+- FFmpeg and FFprobe on `PATH` (`sudo apt install ffmpeg` on Ubuntu)
+- For GPU speed: an NVIDIA GPU whose driver supports CUDA 12, so that `nvidia-smi`
+  works. On WSL2, install the driver on Windows, not inside WSL.
+
+| Component | Download | On disk | Installed |
+|---|---|---|---|
+| CUDA engine | 804 MB | 1.3 GB | when an NVIDIA GPU works |
+| CPU engine | 2 MB | 6 MB | otherwise |
+| Speech model (Parakeet TDT 0.6B v3) | 714 MB | 714 MB | always |
+| Speaker model (Sortformer, 4 speakers) | 147 MB | 147 MB | `--features diarization` |
+| Translation model (Riva Translate 4B) | converted locally | 4.4 GB | `--features translation` |
+
+Translation setup downloads the original checkpoint and converts it on your machine,
+which needs 16 GB of free space during the conversion. Translation runs on the CUDA
+engine; on a CPU-only machine it needs a source build
+(`speechloom setup --features translation --from-source`).
+
+## Usage
+
+Transcribe files or folders:
 
 ```bash
-speechloom setup --backend cuda
+speechloom transcribe recording.mp4
+speechloom transcribe recordings/ --recursive
+speechloom transcribe recording.mp4 --output-dir ./output --formats srt,txt
 ```
 
-To install translation support (about 16 GiB of free space is needed during
-conversion):
-
-```bash
-speechloom setup --backend cuda --features translation
-```
-
-Speaker diarization uses the pinned four-speaker Sortformer model:
+Add speaker labels:
 
 ```bash
 speechloom setup --features diarization
 speechloom transcribe meeting.mp4 --diarize
 ```
 
-Multiple optional features can be selected with
-`--features translation,diarization`.
-
-Setup uses the platform's standard per-user configuration, data, and cache
-directories. Existing repository-local `.runtime` assets are imported in
-place; they are not moved or deleted.
-
-Portable installations can set `SPEECHLOOM_CONFIG_HOME`,
-`SPEECHLOOM_DATA_HOME`, and `SPEECHLOOM_CACHE_HOME` explicitly.
-
-Check setup state or remove setup caches with:
+Translate. Parakeet does not report the language it heard, so name it:
 
 ```bash
-speechloom setup status
-speechloom setup clean --all
+speechloom setup --features translation
+speechloom transcribe russian.mp4 --source-language ru --translate-to en
+speechloom transcribe lecture.mp4 --source-language en --translate-to ar
 ```
 
-The [repository-local setup](docs/operations/repository-local-setup.md) remains
-available for development and troubleshooting.
+Translated files are written next to the originals as `translation.<lang>.*` and
+`subtitles.<lang>.*`.
 
-## Usage
-
-Check the installation:
+Check the installation, inspect a job, or get machine-readable output:
 
 ```bash
 speechloom doctor
+speechloom inspect transcripts/<job directory>
+speechloom transcribe recording.mp4 --json
 ```
 
-Transcribe one or more files:
+Features are cumulative: running `speechloom setup` again keeps the ones you installed.
+`speechloom setup status` verifies the installation, and `speechloom setup clean --all`
+removes download caches.
+
+## Python API
+
+```python
+from pathlib import Path
+
+from speechloom import TranscriptionRequest, TranscriptionService
+
+service = TranscriptionService.from_default_config()
+for result in service.transcribe(TranscriptionRequest(inputs=(Path("interview.mp4"),))):
+    print(result.state, result.job_dir)
+```
+
+The [Python API guide](https://github.com/almajd3713/speechloom/blob/main/docs/python-api.md)
+covers progress events, cancellation, job inspection and background jobs.
+
+## Local HTTP API
 
 ```bash
-speechloom transcribe recording.mp4
-speechloom transcribe recordings/ --recursive --workers 2
-speechloom transcribe recording.mp4 --output-dir ./output
+pipx install "speechloom[api]"
+speechloom serve --allow-root ~/Videos
 ```
 
-To translate a transcript, install the translation feature and provide the
-source and target languages:
+The API listens on `http://127.0.0.1:8765`, with interactive documentation at `/docs`.
+It accepts uploads, or local paths for files under an `--allow-root` directory, streams
+progress as server-sent events and serves the finished files. It rejects requests from
+other websites, and keeps uploaded files until a client deletes them. See the
+[HTTP API guide](https://github.com/almajd3713/speechloom/blob/main/docs/http-api.md).
 
-```bash
-speechloom transcribe russian.mp4 --source-language ru --translate-to en
+## How it works
+
+```text
+media file
+  → FFprobe and FFmpeg: pick the audio stream, convert to 16 kHz mono WAV
+  → NeMo-Speech.cpp with Parakeet TDT: words with timestamps
+  → transcript.json, the canonical result, never overwritten without --force
+  → TXT, SRT and VTT, plus an optional translation through Riva Translate 4B
 ```
 
-The original files remain `transcript.*` and `subtitles.*`. Translated files are
-named `translation.en.*` and `subtitles.en.*`.
-
-Inspect a completed job:
-
-```bash
-speechloom inspect transcripts/<job-directory>
-```
-
-Each job contains a manifest, canonical `transcript.json`, and the requested
-text and subtitle formats. Completed jobs are reused unless `--force` is set.
-
-Run `speechloom transcribe --help` for all options.
-
-## Local API
-
-Install the optional server dependencies and allow the directories a desktop
-client may submit:
-
-```bash
-python3 -m pip install -e ".[api]"
-speechloom serve --allow-root /path/to/media
-```
-
-The API listens on `127.0.0.1:8765`; OpenAPI documentation is available at
-`/docs`. Remote binding requires `--allow-remote` and a
-`SPEECHLOOM_API_TOKEN` bearer token.
+Each job directory has a manifest with the input and model checksums, the settings, the
+tool versions and the timings, so every result can be traced to how it was made.
 
 ## Configuration
 
-Settings are read in this order:
+Settings come from, in order of precedence: command-line options, `SPEECHLOOM_*`
+environment variables, `~/.config/speechloom/config.ini`, and built-in defaults.
+`speechloom setup` records the engine and model paths in its own state file, so the
+configuration file only needs the settings you want to change. See
+[config.example.ini](https://github.com/almajd3713/speechloom/blob/main/config.example.ini).
 
-1. command-line options
-2. `SPEECHLOOM_*` environment variables
-3. the selected INI file
-4. defaults
+## Limitations
 
-The default file is in the platform's standard user configuration directory.
-`--config` still selects an explicit file. See `config.example.ini` for
-available settings.
+- Speech recognition covers the 25 languages above. Arabic speech is not supported;
+  Arabic is available as a translation target.
+- The engine reports neither the detected language nor meaningful per-word confidence:
+  transcripts leave the language empty and give every word a confidence of 1.0.
+- Prebuilt engines exist for Linux on x86_64 only. Other platforms and the Vulkan
+  backend need `speechloom setup --from-source`, which requires CMake 3.26 through 3.x,
+  Ninja and a C++17 compiler, plus `nvcc` for CUDA.
+- Diarization labels at most four speakers.
+- On the CPU engine, transcription runs slower than real time (about 0.6×).
 
-## Tests
+## More
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
-
-Real-runtime tests are enabled by setting `SPEECHLOOM_TEST_NEMO`,
-`SPEECHLOOM_TEST_MODEL`, and `SPEECHLOOM_TEST_MEDIA`.
+- [Troubleshooting](https://github.com/almajd3/speechloom/blob/main/docs/operations/troubleshooting.md)
+- [Contributing](https://github.com/almajd3/speechloom/blob/main/CONTRIBUTING.md)
+- [Changelog](https://github.com/almajd3/speechloom/blob/main/CHANGELOG.md)
+- [Security policy](https://github.com/almajd3/speechloom/blob/main/SECURITY.md)
 
 ## License
 
-The project is licensed under MIT. Models are distributed separately
-under their respective licenses.
+Speechloom is released under the MIT License. Models are downloaded from their
+publishers under their own licenses: Parakeet TDT 0.6B v3 and Sortformer under CC BY
+4.0, and Riva Translate 4B under the NVIDIA Open Model License. NeMo-Speech.cpp is
+licensed under Apache 2.0.

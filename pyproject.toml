@@ -5,16 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "speechloom"
 version = "0.1.1"
-description = "Reliable local audio and video transcription with NeMo-Speech.cpp"
+description = "Offline audio and video transcription with Parakeet TDT and NeMo-Speech.cpp"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Speechloom contributors" }]
+authors = [{ name = "almajd3713" }]
+keywords = ["speech-to-text", "transcription", "asr", "subtitles", "srt", "webvtt", "parakeet", "nemo", "cuda", "offline"]
 dependencies = []
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -22,12 +25,17 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
 
 [project.urls]
-Homepage = "https://github.com/almajd3713/speechloom"
-Issues = "https://github.com/almajd3713/speechloom/issues"
+Homepage = "https://github.com/almajd3/speechloom"
+Documentation = "https://github.com/almajd3/speechloom/tree/main/docs"
+Changelog = "https://github.com/almajd3/speechloom/blob/main/CHANGELOG.md"
+Issues = "https://github.com/almajd3/speechloom/issues"
 
 [project.optional-dependencies]
 api = [
@@ -49,3 +57,23 @@ speechloom = ["data/*.json", "py.typed"]
 
 [tool.setuptools.data-files]
 "share/speechloom/scripts" = ["scripts/*.sh"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+known-first-party = ["speechloom"]
+lines-after-imports = 2
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/speechloom"]
+ignore_missing_imports = true

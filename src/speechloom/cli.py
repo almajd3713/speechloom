@@ -12,8 +12,10 @@ from typing import Any, Sequence
 
 from . import __version__
 from .config import Settings, load_managed_settings
-from .contracts import TranscriptionRequest
+from .contracts import StageEvent, TranscriptionRequest
 from .errors import ConfigurationError, MissingDependencyError, PipelineError
+from .fingerprints import FINGERPRINT_CACHE_FILENAME
+from .runtime import AppPaths
 from .service import TranscriptionService
 from .setup import SetupManager, SetupRequest
 
@@ -133,7 +135,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _serve(args)
         cli_values = _settings_cli_values(args)
         settings = load_managed_settings(config_path=args.config, cli_values=cli_values)
-        service = TranscriptionService(settings)
+        service = TranscriptionService(
+            settings,
+            fingerprint_cache=AppPaths.from_environment().cache_dir / FINGERPRINT_CACHE_FILENAME,
+        )
         if args.command == "doctor":
             return _doctor(args, service)
         if args.command == "transcribe":
@@ -238,7 +243,8 @@ def _transcribe(args: argparse.Namespace, service: TranscriptionService) -> int:
         force=args.force,
         fail_fast=args.fail_fast,
     )
-    results = service.transcribe(request)
+    show_progress = not args.json and sys.stderr.isatty()
+    results = service.transcribe(request, on_event=_print_progress if show_progress else None)
     if args.json:
         print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
     else:
@@ -250,6 +256,14 @@ def _transcribe(args: argparse.Namespace, service: TranscriptionService) -> int:
             else:
                 print(f"CREATED {result.source} -> {result.job_dir}")
     return 1 if any(result.error for result in results) else 0
+
+
+def _print_progress(event: StageEvent) -> None:
+    finished = event.stage == "completed" and event.status == "completed"
+    if event.status not in {"started", "skipped", "failed", "cancelled"} and not finished:
+        return
+    name = event.source.name if event.source is not None else "speechloom"
+    print(f"[{event.stage}] {name}: {event.message}", file=sys.stderr, flush=True)
 
 
 def _inspect(args: argparse.Namespace, service: TranscriptionService) -> int:
@@ -300,6 +314,6 @@ def _settings_cli_values(args: argparse.Namespace) -> dict[str, Any]:
     names = (
         "ffmpeg", "ffprobe", "nemo_speech", "model", "diar_model", "translation_model",
         "source_language", "translate_to", "device",
-        "output_dir", "workers", "keep_audio", "resume", "formats",
+        "output_dir", "workers", "shared_model", "keep_audio", "resume", "formats",
     )
     return {name: getattr(args, name, None) for name in names}
