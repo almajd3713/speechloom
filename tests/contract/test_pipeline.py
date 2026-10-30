@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import speechloom
+from speechloom.artifacts import sha256_file
 from speechloom.jobs import Pipeline, PipelineOptions, inspect_job
 from speechloom.process import CommandResult
 
@@ -403,6 +404,27 @@ class PipelineContractTests(unittest.TestCase):
             manifest = json.loads((Path(first.job_dir) / "manifest.json").read_text("utf-8"))
             self.assertEqual(manifest["options"]["semantics_version"], 1)
             self.assertEqual(manifest["options"]["pipeline_version"], speechloom.__version__)
+
+    def test_fingerprint_cache_skips_rehashing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "parakeet.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            tools = FakeTools()
+            options = PipelineOptions(
+                output_dir=root / "out",
+                model=model,
+                fingerprint_cache=root / "fingerprints.json",
+            )
+
+            Pipeline(options, runner=tools).run([source])
+            with patch("speechloom.fingerprints.sha256_file", wraps=sha256_file) as hashing:
+                second = Pipeline(options, runner=tools).run([source])[0]
+
+            self.assertTrue(second.skipped)
+            self.assertEqual(hashing.call_count, 0)
 
 
 if __name__ == "__main__":

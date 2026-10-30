@@ -4,7 +4,7 @@ from contextlib import redirect_stdout
 import io
 from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from speechloom.cli import _settings_cli_values, build_parser, main
 from speechloom.config import Settings
@@ -73,7 +73,7 @@ class CliServiceContractTests(unittest.TestCase):
             )
 
         self.assertEqual(exit_code, 0)
-        service_type.assert_called_once_with(settings)
+        service_type.assert_called_once_with(settings, fingerprint_cache=ANY)
         load_managed_settings.assert_called_once()
         request = service.transcribe.call_args.args[0]
         self.assertIsInstance(request, TranscriptionRequest)
@@ -104,7 +104,7 @@ class CliServiceContractTests(unittest.TestCase):
             exit_code = main(["doctor", "--output-dir", "jobs"])
 
         self.assertEqual(exit_code, 0)
-        service_type.assert_called_once_with(settings)
+        service_type.assert_called_once_with(settings, fingerprint_cache=ANY)
         service.doctor.assert_called_once_with(output_dir=Path("jobs"))
         self.assertEqual(output.getvalue(), "[OK] runtime: ready\nReady.\n")
 

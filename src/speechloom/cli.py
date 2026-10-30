@@ -14,6 +14,8 @@ from . import __version__
 from .config import Settings, load_managed_settings
 from .contracts import TranscriptionRequest
 from .errors import ConfigurationError, MissingDependencyError, PipelineError
+from .fingerprints import FINGERPRINT_CACHE_FILENAME
+from .runtime import AppPaths
 from .service import TranscriptionService
 from .setup import SetupManager, SetupRequest
 
@@ -133,7 +135,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _serve(args)
         cli_values = _settings_cli_values(args)
         settings = load_managed_settings(config_path=args.config, cli_values=cli_values)
-        service = TranscriptionService(settings)
+        service = TranscriptionService(
+            settings,
+            fingerprint_cache=AppPaths.from_environment().cache_dir / FINGERPRINT_CACHE_FILENAME,
+        )
         if args.command == "doctor":
             return _doctor(args, service)
         if args.command == "transcribe":

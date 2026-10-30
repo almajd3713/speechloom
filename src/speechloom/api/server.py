@@ -23,6 +23,7 @@ from starlette.datastructures import UploadFile
 from speechloom.config import load_managed_settings
 from speechloom.contracts import ArtifactDetails, JobDetails, TranscriptionRequest
 from speechloom.errors import ConfigurationError
+from speechloom.fingerprints import FINGERPRINT_CACHE_FILENAME
 from speechloom.job_manager import TERMINAL_STATES, JobEvent, JobManager, ManagedJob
 from speechloom.runtime import AppPaths
 from speechloom.service import TranscriptionService
@@ -338,7 +339,9 @@ def run_server(settings: ServerSettings, *, config_path: Path | None = None) -> 
     loaded = replace(
         loaded, output_dir=str(resolve_output_dir(loaded.output_dir, app_paths.data_dir))
     )
-    service = TranscriptionService(loaded)
+    service = TranscriptionService(
+        loaded, fingerprint_cache=app_paths.cache_dir / FINGERPRINT_CACHE_FILENAME
+    )
     recovery_roots = settings.recovery_roots or (Path(loaded.output_dir),)
     configured = ServerSettings(
         **{

@@ -27,6 +27,7 @@ from .errors import (
     InferenceError,
     PipelineError,
 )
+from .fingerprints import FingerprintCache
 from .media import can_passthrough_wav, normalize_audio, probe_media, select_audio_stream
 from .nemo import (
     NemoOptions,
@@ -74,6 +75,7 @@ class PipelineOptions:
     workers: int = 1
     fail_fast: bool = False
     shared_model: bool = True
+    fingerprint_cache: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,11 @@ class Pipeline:
         self._event_lock = threading.RLock()
         self.runner = self._run_command
         self._identity_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+        self._fingerprints = (
+            FingerprintCache(options.fingerprint_cache)
+            if options.fingerprint_cache is not None
+            else None
+        )
         self._tool_versions: dict[str, str] | None = None
 
     def run(self, sources: list[Path]) -> list[JobResult]:
@@ -905,7 +912,11 @@ class Pipeline:
         stat = resolved.stat()
         key = (str(resolved), stat.st_size, stat.st_mtime_ns)
         if key not in self._identity_cache:
-            self._identity_cache[key] = file_identity(resolved)
+            self._identity_cache[key] = (
+                self._fingerprints.identity(resolved)
+                if self._fingerprints is not None
+                else file_identity(resolved)
+            )
         return self._identity_cache[key]
 
     def _versions(self) -> dict[str, str]:
