@@ -300,6 +300,6 @@ def _settings_cli_values(args: argparse.Namespace) -> dict[str, Any]:
     names = (
         "ffmpeg", "ffprobe", "nemo_speech", "model", "diar_model", "translation_model",
         "source_language", "translate_to", "device",
-        "output_dir", "workers", "keep_audio", "resume", "formats",
+        "output_dir", "workers", "shared_model", "keep_audio", "resume", "formats",
     )
     return {name: getattr(args, name, None) for name in names}

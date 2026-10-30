@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from speechloom.cli import main
+from speechloom.cli import _settings_cli_values, build_parser, main
 from speechloom.config import Settings
 from speechloom.contracts import JobDetails, TranscriptionRequest
 from speechloom.doctor import Check, DoctorReport
@@ -148,6 +148,14 @@ class CliServiceContractTests(unittest.TestCase):
             "Source: /media/example.mp4\n"
             "TXT: transcript.txt (12 bytes)\n",
         )
+
+    def test_shared_model_flags_reach_settings(self) -> None:
+        cases = (([], None), (["--shared-model"], True), (["--no-shared-model"], False))
+        for suffix, expected in cases:
+            with self.subTest(suffix=suffix):
+                args = build_parser().parse_args(["transcribe", "recording.mp4", *suffix])
+
+                self.assertEqual(_settings_cli_values(args)["shared_model"], expected)
 
 
 if __name__ == "__main__":
