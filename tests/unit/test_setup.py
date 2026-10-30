@@ -125,6 +125,11 @@ def _paths(root: Path) -> AppPaths:
     )
 
 
+def _working_gpu(argv, **kwargs) -> CommandResult:
+    del kwargs
+    return CommandResult(tuple(str(part) for part in argv), 0, "GPU 0: fixture", "")
+
+
 class SetupManagerTests(unittest.TestCase):
     @patch("speechloom.setup._command_available", return_value=True)
     def test_auto_backend_requires_a_working_gpu_probe(self, available) -> None:
@@ -137,7 +142,7 @@ class SetupManagerTests(unittest.TestCase):
 
         manager = SetupManager(runner=blocked_gpu, repository_root=Path("/missing"))
 
-        self.assertEqual(manager._resolve_backend("auto", None), "cpu")
+        self.assertEqual(manager._resolve_backend("auto", None, ()), "cpu")
 
     def test_setup_builds_once_and_rerun_only_verifies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -466,6 +471,57 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual([model.kind for model in second.state.models], ["asr", "diarization"])
             self.assertEqual(second.actions, ())
             self.assertIn("keeping installed features: diarization", messages)
+
+    def _cuda_registry(self, archives: tuple[RuntimeArchiveSpec, ...]) -> Registry:
+        registry = Registry.load()
+        return replace(registry, runtime=replace(registry.runtime, archives=archives))
+
+    @patch("speechloom.setup.platform.machine", return_value="x86_64")
+    @patch("speechloom.setup.platform.system", return_value="Linux")
+    @patch(
+        "speechloom.setup._command_available",
+        side_effect=lambda command: command == "nvidia-smi",
+    )
+    def test_auto_backend_prefers_prebuilt_cuda_without_toolkit(self, *mocks) -> None:
+        del mocks
+        archive = RuntimeArchiveSpec(
+            backend="cuda",
+            system="linux",
+            architecture="x86_64",
+            filename="cuda-fixture.tar.gz",
+            url="https://example.invalid/cuda-fixture.tar.gz",
+            sha256="b" * 64,
+            features=("asr", "translation"),
+            minimum_free_bytes=0,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SetupManager(
+                paths=_paths(Path(directory)),
+                registry=self._cuda_registry((archive,)),
+                runner=_working_gpu,
+                repository_root=Path("/missing"),
+            )
+
+            self.assertEqual(manager._resolve_backend("auto", None, ()), "cuda")
+            self.assertEqual(manager._resolve_backend("auto", None, ("diarization",)), "cuda")
+
+    @patch("speechloom.setup.platform.machine", return_value="x86_64")
+    @patch("speechloom.setup.platform.system", return_value="Linux")
+    @patch(
+        "speechloom.setup._command_available",
+        side_effect=lambda command: command == "nvidia-smi",
+    )
+    def test_auto_backend_without_cuda_archive_or_toolkit_uses_cpu(self, *mocks) -> None:
+        del mocks
+        with tempfile.TemporaryDirectory() as directory:
+            manager = SetupManager(
+                paths=_paths(Path(directory)),
+                registry=self._cuda_registry(()),
+                runner=_working_gpu,
+                repository_root=Path("/missing"),
+            )
+
+            self.assertEqual(manager._resolve_backend("auto", None, ()), "cpu")
 
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

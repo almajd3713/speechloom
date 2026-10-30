@@ -211,7 +211,7 @@ class SetupManager:
         if set(features) != set(request.features):
             kept = sorted(set(features) - set(request.features))
             _emit(on_stage, f"keeping installed features: {', '.join(kept)}")
-        backend = self._resolve_backend(request.backend, old_state)
+        backend = self._resolve_backend(request.backend, old_state, features)
         actions: list[str] = []
 
         runtime = self._reuse_runtime(
@@ -374,7 +374,12 @@ class SetupManager:
                 removed.append(target)
         return tuple(removed)
 
-    def _resolve_backend(self, requested: str, state: InstallState | None) -> str:
+    def _resolve_backend(
+        self,
+        requested: str,
+        state: InstallState | None,
+        features: Sequence[str],
+    ) -> str:
         if requested in {"cpu", "vulkan"}:
             return requested
         gpu_usable = self._gpu_usable()
@@ -391,6 +396,8 @@ class SetupManager:
         ):
             return state.backend
         if self._legacy_executable("cuda") and gpu_usable:
+            return "cuda"
+        if gpu_usable and self._runtime_archive("cuda", features) is not None:
             return "cuda"
         if gpu_usable and _command_available("nvcc"):
             return "cuda"
