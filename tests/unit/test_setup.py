@@ -443,6 +443,30 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual(second.actions, ("installed diarization model",))
             self.assertEqual(len(builds), 1)
 
+    def test_rerunning_setup_keeps_installed_features(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr", b"diar"),
+                runner=FakeInstaller(b"asr", b"diar"),
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+            messages: list[str] = []
+
+            manager.setup(SetupRequest(backend="cpu", features=("diarization",)))
+            second = manager.setup(SetupRequest(backend="cpu"), on_stage=messages.append)
+
+            self.assertEqual(second.state.features, ("diarization",))
+            self.assertEqual([model.kind for model in second.state.models], ["asr", "diarization"])
+            self.assertEqual(second.actions, ())
+            self.assertIn("keeping installed features: diarization", messages)
+
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

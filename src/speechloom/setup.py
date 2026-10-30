@@ -205,28 +205,34 @@ class SetupManager:
     ) -> SetupResult:
         self.paths.create()
         old_state = load_install_state(self.paths.state_file)
+        features = tuple(
+            sorted(set(request.features) | set(old_state.features if old_state else ()))
+        )
+        if set(features) != set(request.features):
+            kept = sorted(set(features) - set(request.features))
+            _emit(on_stage, f"keeping installed features: {', '.join(kept)}")
         backend = self._resolve_backend(request.backend, old_state)
         actions: list[str] = []
 
         runtime = self._reuse_runtime(
             old_state,
             backend,
-            request.features,
+            features,
             from_source=request.from_source,
         )
         if runtime is None and not request.from_source:
-            runtime = self._legacy_runtime(backend, request.features)
+            runtime = self._legacy_runtime(backend, features)
             if runtime is not None:
                 actions.append("imported legacy runtime")
         if runtime is None and not request.from_source:
-            archive = self._runtime_archive(backend, request.features)
+            archive = self._runtime_archive(backend, features)
             if archive is not None:
                 _emit(on_stage, f"installing {backend} runtime archive")
                 runtime = self._install_runtime_archive(archive)
                 actions.append(f"installed {backend} prebuilt runtime")
         if runtime is None:
             _emit(on_stage, f"building {backend} runtime")
-            runtime = self._build_runtime(backend, request.features)
+            runtime = self._build_runtime(backend, features)
             actions.append(f"built {backend} runtime")
 
         installed_models: list[InstalledArtifact] = []
@@ -240,7 +246,7 @@ class SetupManager:
             actions.append("imported legacy ASR model")
         installed_models.append(asr)
 
-        if "diarization" in request.features:
+        if "diarization" in features:
             diar_spec = self.registry.model("diarization")
             diar = self._reuse_model(old_state, diar_spec) or self._legacy_model(diar_spec)
             if diar is None:
@@ -251,7 +257,7 @@ class SetupManager:
                 actions.append("imported legacy diarization model")
             installed_models.append(diar)
 
-        if "translation" in request.features:
+        if "translation" in features:
             translation_spec = self.registry.model("translation")
             translation = (
                 self._reuse_model(old_state, translation_spec)
@@ -272,12 +278,12 @@ class SetupManager:
 
         state = InstallState(
             backend=backend,
-            features=request.features,
+            features=features,
             config_path=str(self.config_path),
             runtime=runtime,
             models=tuple(installed_models),
             platform=self._platform_details(),
-            completed_stages=("runtime", "asr", "config") + request.features,
+            completed_stages=("runtime", "asr", "config") + features,
             retained_cache=self._retained_cache(),
             created_at=old_state.created_at if old_state else _timestamp(),
             updated_at=_timestamp(),
