@@ -119,7 +119,7 @@ def translate_texts(
     if not normalized or any(not text for text in normalized):
         raise InferenceError("Translation inputs must contain text")
 
-    with tempfile.TemporaryDirectory(prefix="parakeet-translation-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="speechloom-translation-") as temporary:
         input_path = Path(temporary) / "segments.txt"
         input_path.write_text("\n".join(normalized) + "\n", encoding="utf-8")
         argv = [

@@ -260,7 +260,7 @@ class Pipeline:
             return results
 
         results_by_source: dict[str, JobResult] = {}
-        with ThreadPoolExecutor(max_workers=self.options.workers, thread_name_prefix="parakeet") as executor:
+        with ThreadPoolExecutor(max_workers=self.options.workers, thread_name_prefix="speechloom") as executor:
             future_map = {executor.submit(self.run_one, source): source for source in sources}
             for future in as_completed(future_map):
                 source = future_map[future]
@@ -341,7 +341,7 @@ class Pipeline:
             )
         output_root = self.options.output_dir.expanduser().resolve()
         output_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix=".parakeet-batch-", dir=output_root) as temporary:
+        with tempfile.TemporaryDirectory(prefix=".speechloom-batch-", dir=output_root) as temporary:
             staging_root = Path(temporary)
             input_dir = staging_root / "input"
             output_dir = staging_root / "output"

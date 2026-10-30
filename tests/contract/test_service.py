@@ -247,6 +247,17 @@ class TranscriptionServiceTests(unittest.TestCase):
 
             self.assertEqual(tools.inference_calls, 0)
 
+    def test_missing_model_points_to_setup(self) -> None:
+        service = TranscriptionService(Settings())
+
+        with self.assertRaises(ConfigurationError) as raised:
+            service.transcribe(TranscriptionRequest(inputs=(Path("recording.mp4"),)))
+
+        self.assertEqual(
+            str(raised.exception),
+            "No ASR model is configured; run 'speechloom setup' or pass --model",
+        )
+
     def test_python_caller_can_run_doctor_without_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -48,7 +48,7 @@ class TranscriptionService:
             cancellation.raise_if_cancelled()
         if not self._settings.model:
             raise ConfigurationError(
-                "No ASR model configured; pass --model or set SPEECHLOOM_MODEL"
+                "No ASR model is configured; run 'speechloom setup' or pass --model"
             )
         if request.diarize and not self._settings.diar_model:
             raise ConfigurationError(
