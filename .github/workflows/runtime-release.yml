@@ -25,7 +25,7 @@ jobs:
   cpu:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install build prerequisites
         run: |
           sudo apt-get update
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-22.04
     container: nvidia/cuda:12.6.3-devel-ubuntu22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install build prerequisites
         run: |
           apt-get update
@@ -127,7 +127,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: runtime-*
@@ -225,7 +225,7 @@ jobs:
     needs: [cpu, cuda]
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: runtime-*
