@@ -39,6 +39,7 @@ Runner = Callable[..., CommandResult]
 StageSink = Callable[[str], None]
 EventSink = Callable[[StageEvent], None]
 Doctor = Callable[..., DoctorReport]
+RUNTIME_FEATURES: frozenset[str] = frozenset({"translation"})
 
 
 @dataclass(frozen=True)
@@ -409,7 +410,7 @@ class SetupManager:
     ) -> InstalledArtifact | None:
         if not state or state.backend != backend or state.runtime is None:
             return None
-        if not set(features).issubset(state.features):
+        if not set(_runtime_features(features)).issubset(state.features):
             return None
         if from_source and state.runtime.source != "source-build":
             return None
@@ -485,7 +486,7 @@ class SetupManager:
             backend,
             platform.system().lower(),
             machine,
-            tuple(features),
+            _runtime_features(features),
         )
 
     def _install_runtime_archive(self, spec: RuntimeArchiveSpec) -> InstalledArtifact:
@@ -803,6 +804,10 @@ def _find_repository_root() -> Path | None:
 
 def _command_available(command: str) -> bool:
     return shutil.which(command) is not None
+
+
+def _runtime_features(features: Sequence[str]) -> tuple[str, ...]:
+    return tuple(sorted(feature for feature in features if feature in RUNTIME_FEATURES))
 
 
 def _emit(sink: StageSink | None, message: str) -> None:

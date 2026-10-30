@@ -77,6 +77,43 @@ def _registry(asr_content: bytes, diar_content: bytes = b"diar") -> Registry:
     )
 
 
+def _prebuilt_registry(root: Path, registry: Registry) -> tuple[Registry, str, bytes]:
+    prefix = root / "archive-prefix"
+    executable = prefix / registry.runtime.executable
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"prebuilt-runtime")
+    executable.chmod(0o755)
+    license_file = prefix / "share/licenses/nemo-speech/LICENSE"
+    license_file.parent.mkdir(parents=True)
+    license_file.write_text("fixture license\n", encoding="utf-8")
+    filename = "speechloom-runtime-fixture-cpu-linux-x86_64.tar.gz"
+    archive_path = root / filename
+    archive_sha = build_runtime_archive(
+        prefix,
+        archive_path,
+        RuntimeArchiveMetadata(
+            backend="cpu",
+            system="linux",
+            architecture="x86_64",
+            revision=registry.runtime.revision,
+            features=("asr",),
+            executable=registry.runtime.executable,
+        ),
+    )
+    archive = RuntimeArchiveSpec(
+        backend="cpu",
+        system="linux",
+        architecture="x86_64",
+        filename=filename,
+        url=f"https://example.invalid/{filename}",
+        sha256=archive_sha,
+        features=("asr",),
+        minimum_free_bytes=0,
+    )
+    prebuilt = replace(registry, runtime=replace(registry.runtime, archives=(archive,)))
+    return prebuilt, filename, archive_path.read_bytes()
+
+
 def _paths(root: Path) -> AppPaths:
     return AppPaths.from_environment(
         {
@@ -355,6 +392,56 @@ class SetupManagerTests(unittest.TestCase):
             self.assertEqual(diar.license, "CC-BY-4.0")
             self.assertEqual(Path(diar.path).read_bytes(), b"diar")
             self.assertIn("installed diarization model", result.actions)
+
+    def test_diarization_setup_uses_prebuilt_runtime_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "download_artifact.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            registry, filename, archive = _prebuilt_registry(root, _registry(b"asr", b"diar"))
+            installer = FakeInstaller(b"asr", b"diar", artifacts={filename: archive})
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=registry,
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            result = manager.setup(SetupRequest(backend="cpu", features=("diarization",)))
+
+            self.assertIn("installed cpu prebuilt runtime", result.actions)
+            self.assertIn("installed diarization model", result.actions)
+            self.assertEqual(result.state.runtime.source, "prebuilt")
+            self.assertFalse(
+                any("bootstrap_runtime.sh" in part for call in installer.calls for part in call)
+            )
+
+    def test_adding_diarization_reuses_installed_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / "repo/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("bootstrap_runtime.sh", "download_artifact.sh"):
+                (scripts / name).write_text("#!/bin/sh\n", encoding="utf-8")
+            installer = FakeInstaller(b"asr", b"diar")
+            manager = SetupManager(
+                paths=_paths(root),
+                registry=_registry(b"asr", b"diar"),
+                runner=installer,
+                doctor=lambda *args, **kwargs: DoctorReport(True, ()),
+                repository_root=root / "repo",
+            )
+
+            manager.setup(SetupRequest(backend="cpu"))
+            second = manager.setup(SetupRequest(backend="cpu", features=("diarization",)))
+
+            builds = [
+                call for call in installer.calls if any("bootstrap_runtime.sh" in p for p in call)
+            ]
+            self.assertEqual(second.actions, ("installed diarization model",))
+            self.assertEqual(len(builds), 1)
 
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
