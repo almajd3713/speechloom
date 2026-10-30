@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
@@ -97,6 +97,12 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app
         staging_dir.mkdir(parents=True, exist_ok=True)
+        keep = frozenset(
+            directory.resolve()
+            for job in manager.list(offset=0, limit=max(1, manager.count()))
+            for directory in _job_upload_dirs(job, staging_dir)
+        )
+        _sweep_staging(staging_dir, keep)
         yield
 
     app = FastAPI(
@@ -177,6 +183,7 @@ def create_app(
     )
     async def create_job(request: Request) -> JSONResponse:
         content_type = request.headers.get("content-type", "").lower()
+        request_dir: Path | None = None
         if content_type.startswith("application/json"):
             if not _is_loopback(settings.host):
                 raise ApiError(403, "local_paths_disabled", "Local path input is loopback-only")
@@ -193,7 +200,7 @@ def create_app(
                 ) from exc
             transcription = _request_from_model(payload, policy)
         elif content_type.startswith("multipart/form-data"):
-            transcription = await _request_from_upload(
+            transcription, request_dir = await _request_from_upload(
                 request, staging_dir, settings.max_upload_bytes
             )
         else:
@@ -202,8 +209,13 @@ def create_app(
                 "unsupported_media_type",
                 "Use application/json or multipart/form-data",
             )
-        submitted = manager.submit(transcription)
-        response = JSONResponse(status_code=202, content=_job_payload(submitted))
+        try:
+            submitted = manager.submit(transcription)
+        except Exception:
+            if request_dir is not None:
+                shutil.rmtree(request_dir, ignore_errors=True)
+            raise
+        response = JSONResponse(status_code=202, content=_job_payload(submitted, staging_dir))
         response.headers["Location"] = f"/v1/jobs/{submitted.id}"
         return response
 
@@ -220,7 +232,7 @@ def create_app(
     ) -> dict[str, Any]:
         jobs = manager.list(offset=offset, limit=limit, state=state)
         return {
-            "items": [_job_payload(job) for job in jobs],
+            "items": [_job_payload(job, staging_dir) for job in jobs],
             "offset": offset,
             "limit": limit,
             "total": manager.count(state=state),
@@ -233,7 +245,7 @@ def create_app(
         tags=["jobs"],
     )
     async def get_job(job_id: str) -> dict[str, Any]:
-        return _job_payload(manager.get(job_id))
+        return _job_payload(manager.get(job_id), staging_dir)
 
     @app.delete(
         "/v1/jobs/{job_id}",
@@ -242,7 +254,26 @@ def create_app(
         tags=["jobs"],
     )
     async def cancel_job(job_id: str) -> dict[str, Any]:
-        return _job_payload(manager.cancel(job_id))
+        return _job_payload(manager.cancel(job_id), staging_dir)
+
+    @app.delete(
+        "/v1/jobs/{job_id}/upload",
+        status_code=204,
+        responses=ERROR_RESPONSES,
+        tags=["jobs"],
+    )
+    async def delete_upload(job_id: str) -> Response:
+        job = manager.get(job_id)
+        if job.state not in TERMINAL_STATES:
+            raise ApiError(
+                409, "job_active", "Uploaded media can be deleted after the job finishes"
+            )
+        directories = _job_upload_dirs(job, staging_dir)
+        if not directories:
+            raise ApiError(404, "upload_not_found", "This job has no stored upload")
+        for directory in directories:
+            shutil.rmtree(directory, ignore_errors=True)
+        return Response(status_code=204)
 
     @app.get(
         "/v1/jobs/{job_id}/events",
@@ -376,7 +407,7 @@ async def _request_from_upload(
     request: Request,
     staging_root: Path,
     max_upload_bytes: int,
-) -> TranscriptionRequest:
+) -> tuple[TranscriptionRequest, Path]:
     form = await request.form()
     files = [
         value
@@ -402,7 +433,7 @@ async def _store_uploads(
     raw_options: object,
     staging_root: Path,
     max_upload_bytes: int,
-) -> TranscriptionRequest:
+) -> tuple[TranscriptionRequest, Path]:
     try:
         options = json.loads(str(raw_options))
     except json.JSONDecodeError as exc:
@@ -445,7 +476,7 @@ async def _store_uploads(
                 "Upload options failed validation",
                 details=_validation_details(exc),
             ) from exc
-        return TranscriptionRequest(
+        transcription = TranscriptionRequest(
             inputs=tuple(stored),
             output_dir=None,
             formats=tuple(model.formats) if model.formats is not None else None,
@@ -460,6 +491,7 @@ async def _store_uploads(
             workers=model.workers,
             fail_fast=model.fail_fast,
         )
+        return transcription, request_dir
     except Exception:
         shutil.rmtree(request_dir, ignore_errors=True)
         raise
@@ -469,6 +501,36 @@ def _safe_filename(value: str | None, index: int) -> str:
     basename = Path(value or f"upload-{index + 1}").name
     normalized = re.sub(r"[^\w.-]+", "-", basename, flags=re.UNICODE).strip(".-")
     return f"{index + 1:03d}-{normalized or 'upload'}"
+
+
+def _upload_dir(path: Path, staging_dir: Path) -> Path | None:
+    parent = path.parent
+    if not re.fullmatch(r"[0-9a-f]{32}", parent.name):
+        return None
+    if parent.parent.expanduser().resolve() != staging_dir.expanduser().resolve():
+        return None
+    return parent
+
+
+def _job_upload_dirs(job: ManagedJob, staging_dir: Path) -> tuple[Path, ...]:
+    directories: dict[Path, None] = {}
+    for path in job.inputs:
+        directory = _upload_dir(path, staging_dir)
+        if directory is not None and directory.is_dir():
+            directories[directory] = None
+    return tuple(directories)
+
+
+def _sweep_staging(staging_dir: Path, keep: frozenset[Path]) -> None:
+    if not staging_dir.is_dir():
+        return
+    for child in staging_dir.iterdir():
+        if (
+            child.is_dir()
+            and re.fullmatch(r"[0-9a-f]{32}", child.name)
+            and child.resolve() not in keep
+        ):
+            shutil.rmtree(child, ignore_errors=True)
 
 
 def _validation_details(exc: ValidationError) -> list[dict[str, str]]:
@@ -481,7 +543,7 @@ def _validation_details(exc: ValidationError) -> list[dict[str, str]]:
     ]
 
 
-def _job_payload(job: ManagedJob) -> dict[str, Any]:
+def _job_payload(job: ManagedJob, staging_dir: Path) -> dict[str, Any]:
     return {
         "id": job.id,
         "state": job.state,
@@ -501,6 +563,7 @@ def _job_payload(job: ManagedJob) -> dict[str, Any]:
         ],
         "error": job.error,
         "recovered": job.recovered,
+        "has_upload": bool(_job_upload_dirs(job, staging_dir)),
     }
 
 

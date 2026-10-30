@@ -41,6 +41,7 @@ class JobResponse(BaseModel):
     results: list[ResultResponse]
     error: str | None = None
     recovered: bool
+    has_upload: bool
 
 
 class JobListResponse(BaseModel):

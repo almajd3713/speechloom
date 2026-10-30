@@ -12,7 +12,7 @@ import unittest
 import httpx2 as httpx
 
 from speechloom.api.errors import ApiError
-from speechloom.api.server import ServerSettings, _format_sse_event, create_app
+from speechloom.api.server import ServerSettings, _format_sse_event, _sweep_staging, create_app
 from speechloom.artifacts import sha256_file
 from speechloom.contracts import JobDetails, StageEvent
 from speechloom.errors import ConfigurationError
@@ -67,6 +67,29 @@ class FixtureService:
         path = Path(job)
         manifest = path / "manifest.json" if path.is_dir() else path
         return JobDetails.from_manifest(json.loads(manifest.read_text(encoding="utf-8")))
+
+
+async def _wait_for_state(client: httpx.AsyncClient, job_id: str, state: str) -> dict:
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        job = (await client.get(f"/v1/jobs/{job_id}")).json()
+        if job["state"] == state:
+            break
+        await asyncio.sleep(0.01)
+    return job
+
+
+async def _wait_until_entered(service: FixtureService) -> None:
+    deadline = time.monotonic() + 2
+    while not service.entered.is_set() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+
+
+def _upload(name: str) -> dict:
+    return {
+        "files": [("files", (name, b"media", "audio/wav"))],
+        "data": {"options": json.dumps({"formats": ["txt"]})},
+    }
 
 
 class ApiContractTests(unittest.IsolatedAsyncioTestCase):
@@ -221,6 +244,13 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                     staged = list((root / "staging").glob("*/*"))
                     self.assertEqual(len(staged), 1)
                     self.assertNotIn("..", staged[0].name)
+
+                    removed = await client.delete(f"/v1/jobs/{job_id}/upload")
+                    self.assertEqual(removed.status_code, 204)
+                    self.assertEqual(removed.content, b"")
+                    self.assertFalse(list((root / "staging").glob("*")))
+                    after = (await client.get(f"/v1/jobs/{job_id}")).json()
+                    self.assertFalse(after["has_upload"])
             finally:
                 service.release.set()
                 manager.close(cancel=True)
@@ -323,11 +353,135 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 manager.close(cancel=True)
 
+    async def test_upload_is_kept_until_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post("/v1/jobs", **_upload("clip.wav"))
+                    job_id = submitted.json()["id"]
+                    job = await _wait_for_state(client, job_id, "completed")
+
+                    self.assertEqual(job["state"], "completed")
+                    self.assertTrue(job["has_upload"])
+                    self.assertEqual(len(list((root / "staging").glob("*/001-clip.wav"))), 1)
+
+                    removed = await client.delete(f"/v1/jobs/{job_id}/upload")
+
+                    self.assertEqual(removed.status_code, 204)
+                    self.assertFalse(list((root / "staging").glob("*")))
+                    job = (await client.get(f"/v1/jobs/{job_id}")).json()
+                    self.assertFalse(job["has_upload"])
+                    again = await client.delete(f"/v1/jobs/{job_id}/upload")
+                    self.assertEqual(again.status_code, 404)
+                    self.assertEqual(again.json()["error"]["code"], "upload_not_found")
+            finally:
+                manager.close(cancel=True)
+
+    async def test_upload_cannot_be_deleted_while_job_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = FixtureService(block=True)
+            app, manager = self._app(root, service)
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post("/v1/jobs", **_upload("clip.wav"))
+                    job_id = submitted.json()["id"]
+                    await _wait_until_entered(service)
+
+                    refused = await client.delete(f"/v1/jobs/{job_id}/upload")
+
+                    self.assertEqual(refused.status_code, 409)
+                    self.assertEqual(refused.json()["error"]["code"], "job_active")
+                    self.assertEqual(len(list((root / "staging").glob("*/001-clip.wav"))), 1)
+            finally:
+                service.release.set()
+                manager.close(cancel=True)
+
+    async def test_local_path_job_has_no_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post("/v1/jobs", json={"inputs": [str(source)]})
+                    job_id = submitted.json()["id"]
+                    job = await _wait_for_state(client, job_id, "completed")
+
+                    self.assertEqual(job["state"], "completed")
+                    self.assertFalse(job["has_upload"])
+                    removed = await client.delete(f"/v1/jobs/{job_id}/upload")
+                    self.assertEqual(removed.status_code, 404)
+                    self.assertEqual(removed.json()["error"]["code"], "upload_not_found")
+            finally:
+                manager.close(cancel=True)
+
+    async def test_rejected_submission_removes_staged_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = FixtureService(block=True)
+            manager = JobManager(service, queue_size=1, media_workers=1)
+            app = create_app(
+                service,
+                manager,
+                ServerSettings(
+                    allowed_roots=(root,),
+                    staging_dir=root / "staging",
+                    max_upload_bytes=1024 * 1024,
+                ),
+            )
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    first = await client.post("/v1/jobs", **_upload("a.wav"))
+                    await _wait_until_entered(service)
+                    second = await client.post("/v1/jobs", **_upload("b.wav"))
+                    third = await client.post("/v1/jobs", **_upload("c.wav"))
+
+                    self.assertEqual(first.status_code, 202)
+                    self.assertEqual(second.status_code, 202)
+                    self.assertEqual(third.status_code, 429)
+                    self.assertEqual(third.json()["error"]["code"], "queue_full")
+                    self.assertEqual(len(list((root / "staging").glob("*"))), 2)
+            finally:
+                service.release.set()
+                manager.close(cancel=True)
+
     async def test_remote_binding_requires_explicit_permission_and_token(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "--allow-remote"):
             ServerSettings(host="0.0.0.0")
         with self.assertRaisesRegex(ConfigurationError, "SPEECHLOOM_API_TOKEN"):
             ServerSettings(host="0.0.0.0", allow_remote=True)
+
+
+class ServerHelperTests(unittest.TestCase):
+    def test_startup_sweep_removes_only_orphaned_uploads(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory)
+            referenced = staging / ("a" * 32)
+            orphaned = staging / ("b" * 32)
+            other = staging / "keep-me"
+            for path in (referenced, orphaned, other):
+                path.mkdir()
+            notes = staging / "notes.txt"
+            notes.write_text("notes", encoding="utf-8")
+
+            _sweep_staging(staging, frozenset({referenced.resolve()}))
+
+            self.assertTrue(referenced.is_dir())
+            self.assertTrue(other.is_dir())
+            self.assertTrue(notes.is_file())
+            self.assertFalse(orphaned.exists())
 
 
 if __name__ == "__main__":
