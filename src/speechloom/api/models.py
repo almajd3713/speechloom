@@ -19,7 +19,7 @@ class JobCreateRequest(BaseModel):
     resume: bool | None = None
     force: bool = False
     keep_audio: bool | None = None
-    workers: int | None = Field(default=None, ge=1)
+    workers: int | None = Field(default=None, ge=1, le=8)
     fail_fast: bool = False
 
 

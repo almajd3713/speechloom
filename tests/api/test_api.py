@@ -12,7 +12,13 @@ import unittest
 import httpx2 as httpx
 
 from speechloom.api.errors import ApiError
-from speechloom.api.server import ServerSettings, _format_sse_event, _sweep_staging, create_app
+from speechloom.api.server import (
+    ServerSettings,
+    _format_sse_event,
+    _sweep_staging,
+    create_app,
+    resolve_output_dir,
+)
 from speechloom.artifacts import sha256_file
 from speechloom.contracts import JobDetails, StageEvent
 from speechloom.errors import ConfigurationError
@@ -457,6 +463,29 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                 service.release.set()
                 manager.close(cancel=True)
 
+    async def test_worker_count_is_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    too_many = await client.post(
+                        "/v1/jobs", json={"inputs": [str(source)], "workers": 9}
+                    )
+                    allowed = await client.post(
+                        "/v1/jobs", json={"inputs": [str(source)], "workers": 8}
+                    )
+
+                    self.assertEqual(too_many.status_code, 422)
+                    self.assertEqual(too_many.json()["error"]["code"], "validation_error")
+                    self.assertEqual(allowed.status_code, 202)
+            finally:
+                manager.close(cancel=True)
+
     async def test_remote_binding_requires_explicit_permission_and_token(self) -> None:
         with self.assertRaisesRegex(ConfigurationError, "--allow-remote"):
             ServerSettings(host="0.0.0.0")
@@ -482,6 +511,13 @@ class ServerHelperTests(unittest.TestCase):
             self.assertTrue(other.is_dir())
             self.assertTrue(notes.is_file())
             self.assertFalse(orphaned.exists())
+
+    def test_resolve_output_dir_uses_data_directory_for_relative_paths(self) -> None:
+        data = Path("/data")
+
+        self.assertEqual(resolve_output_dir("transcripts", data), Path("/data/transcripts"))
+        self.assertEqual(resolve_output_dir("/srv/out", data), Path("/srv/out"))
+        self.assertEqual(resolve_output_dir("~/out", data), Path.home() / "out")
 
 
 if __name__ == "__main__":

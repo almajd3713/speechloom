@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hmac
 import ipaddress
 import json
@@ -321,6 +321,11 @@ def create_app(
     return app
 
 
+def resolve_output_dir(output_dir: str, data_dir: Path) -> Path:
+    path = Path(output_dir).expanduser()
+    return path if path.is_absolute() else data_dir / path
+
+
 def run_server(settings: ServerSettings, *, config_path: Path | None = None) -> None:
     try:
         import uvicorn
@@ -330,6 +335,9 @@ def run_server(settings: ServerSettings, *, config_path: Path | None = None) -> 
     app_paths = AppPaths.from_environment()
     staging_dir = settings.staging_dir or app_paths.data_dir / "staging"
     loaded = load_managed_settings(config_path=config_path)
+    loaded = replace(
+        loaded, output_dir=str(resolve_output_dir(loaded.output_dir, app_paths.data_dir))
+    )
     service = TranscriptionService(loaded)
     recovery_roots = settings.recovery_roots or (Path(loaded.output_dir),)
     configured = ServerSettings(
