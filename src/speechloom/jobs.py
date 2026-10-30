@@ -49,6 +49,8 @@ from .schema import SCHEMA_VERSION, Transcript, TranslatedSegment, Translation
 
 
 MANIFEST_SCHEMA_VERSION = 1
+# Bump only when the same inputs would produce different artifacts.
+PIPELINE_SEMANTICS_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -498,7 +500,11 @@ class Pipeline:
             model=model_identity,
             diar_model=diar_identity,
             translation_model=translation_identity,
-            options={**semantic, "requested_formats": list(self.options.formats)},
+            options={
+                **semantic,
+                "pipeline_version": __version__,
+                "requested_formats": list(self.options.formats),
+            },
             tools=tool_versions,
         )
         manifest.pop("error", None)
@@ -881,7 +887,7 @@ class Pipeline:
         tool_versions: dict[str, str],
     ) -> dict[str, Any]:
         return {
-            "pipeline_version": __version__,
+            "semantics_version": PIPELINE_SEMANTICS_VERSION,
             "transcript_schema": SCHEMA_VERSION,
             "model_sha256": model_identity["sha256"],
             "diar_model_sha256": diar_identity["sha256"] if diar_identity else None,
