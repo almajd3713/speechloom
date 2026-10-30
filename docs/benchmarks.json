@@ -1,0 +1,27 @@
+{
+  "cpu": {
+    "audio_seconds": 123.21,
+    "cpu": "AMD Ryzen 9 7940HS w/ Radeon 780M Graphics",
+    "cpu_threads": 16,
+    "median_inference_seconds": 196.89,
+    "median_total_seconds": 197.98,
+    "runs": 1,
+    "speed": 0.6,
+    "speed_label": "0.6",
+    "ten_minute_seconds_label": "964"
+  },
+  "cuda": {
+    "audio_seconds": 602.36,
+    "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU, 617.14",
+    "median_inference_seconds": 15.24,
+    "median_total_seconds": 17.5,
+    "peak_gpu_memory_mib": 4063,
+    "runs": 3,
+    "speed": 34.4,
+    "speed_label": "34",
+    "ten_minute_seconds_label": "17"
+  },
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+  "schema_version": 1,
+  "speechloom_version": "speechloom 0.1.1"
+}
