@@ -6,6 +6,8 @@ All notable changes to Speechloom are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-30
+
 ### Fixed
 
 - Plain transcription failed after `speechloom setup --features translation`.
@@ -65,5 +67,6 @@ All notable changes to Speechloom are documented here. The format follows
 
 - Prepared but never published to PyPI.
 
-[Unreleased]: https://github.com/almajd3713/speechloom/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/almajd3713/speechloom/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/almajd3713/speechloom/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/almajd3713/speechloom/releases/tag/v0.1.1
