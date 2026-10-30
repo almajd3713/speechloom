@@ -46,6 +46,7 @@ GENERATED_CONFIG = (
     "# install.json in the Speechloom data directory. Set nemo_speech, model or\n"
     "# device here only to override the managed installation.\n"
 )
+REPOSITORY_ROOT_ENV = "SPEECHLOOM_REPOSITORY_ROOT"
 
 
 @dataclass(frozen=True)
@@ -827,11 +828,12 @@ class SetupManager:
 
 
 def _find_repository_root() -> Path | None:
-    candidates = [Path.cwd(), Path(__file__).resolve().parents[2]]
-    for start in candidates:
-        for path in (start, *start.parents):
-            if (path / "scripts/bootstrap_runtime.sh").is_file():
-                return path
+    override = os.environ.get(REPOSITORY_ROOT_ENV, "").strip()
+    candidate = (
+        Path(override).expanduser().resolve() if override else Path(__file__).resolve().parents[2]
+    )
+    if (candidate / "scripts/bootstrap_runtime.sh").is_file():
+        return candidate
     return None
 
 

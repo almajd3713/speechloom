@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from speechloom import CancellationController, StageEvent
+from speechloom import setup as setup_module
 from speechloom.config import load_managed_settings
 from speechloom.doctor import DoctorReport
 from speechloom.errors import CancellationError, SetupError
@@ -17,7 +18,7 @@ from speechloom.process import CommandResult, run_command
 from speechloom.registry import Registry, RuntimeArchiveSpec
 from speechloom.runtime import AppPaths, load_install_state
 from speechloom.runtime_archive import RuntimeArchiveMetadata, build_runtime_archive
-from speechloom.setup import GENERATED_CONFIG, SetupManager, SetupRequest
+from speechloom.setup import GENERATED_CONFIG, SetupManager, SetupRequest, _find_repository_root
 
 
 class FakeInstaller:
@@ -587,6 +588,46 @@ class SetupManagerTests(unittest.TestCase):
 
             self.assertEqual(manager.config_path.read_text(encoding="utf-8"), custom)
             self.assertEqual(second.actions, ())
+
+    def test_repository_root_ignores_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "scripts").mkdir()
+            (root / "scripts/bootstrap_runtime.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            nested = root / "a/b"
+            nested.mkdir(parents=True)
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if key != "SPEECHLOOM_REPOSITORY_ROOT"
+            }
+            original = Path.cwd()
+
+            with patch.dict(os.environ, environment, clear=True):
+                os.chdir(nested)
+                try:
+                    found = _find_repository_root()
+                finally:
+                    os.chdir(original)
+
+            self.assertNotEqual(found, root)
+            self.assertIn(found, (None, Path(setup_module.__file__).resolve().parents[2]))
+
+    def test_repository_root_honours_explicit_override(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with_scripts = root / "with"
+            (with_scripts / "scripts").mkdir(parents=True)
+            (with_scripts / "scripts/bootstrap_runtime.sh").write_text(
+                "#!/bin/sh\n", encoding="utf-8"
+            )
+            without_scripts = root / "without"
+            without_scripts.mkdir()
+
+            with patch.dict(os.environ, {"SPEECHLOOM_REPOSITORY_ROOT": str(with_scripts)}):
+                self.assertEqual(_find_repository_root(), with_scripts)
+            with patch.dict(os.environ, {"SPEECHLOOM_REPOSITORY_ROOT": str(without_scripts)}):
+                self.assertIsNone(_find_repository_root())
 
     def test_clean_only_removes_requested_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
