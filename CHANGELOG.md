@@ -6,6 +6,8 @@ All notable changes to Speechloom are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
 ### Added
 
 - `GET /v1/capabilities` reports installed features and supported languages.
@@ -94,6 +96,7 @@ All notable changes to Speechloom are documented here. The format follows
 
 - Prepared but never published to PyPI.
 
-[Unreleased]: https://github.com/almajd3713/speechloom/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/almajd3713/speechloom/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/almajd3713/speechloom/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/almajd3713/speechloom/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/almajd3713/speechloom/releases/tag/v0.1.1
