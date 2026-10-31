@@ -40,3 +40,10 @@ test('clamp and pluralize', () => {
   assert.equal(pluralize(1, 'file'), '1 file');
   assert.equal(pluralize(2, 'file'), '2 files');
 });
+
+test('displayName strips the upload prefix only for uploads', async () => {
+  const { displayName } = await import('../../src/speechloom/web/js/format.js');
+  assert.equal(displayName('001-clip.wav', true), 'clip.wav');
+  assert.equal(displayName('001-clip.wav', false), '001-clip.wav');
+  assert.equal(displayName('clip.wav', true), 'clip.wav');
+});

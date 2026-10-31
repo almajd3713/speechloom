@@ -146,3 +146,24 @@ progress, .bar {
   .topbar { flex-direction: column; align-items: flex-start; gap: 0.4rem; }
   main { padding: 1rem 0.75rem 3rem; }
 }
+
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.25rem; margin: 0.5rem 0; }
+.dropzone {
+  display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+  padding: 2rem 1rem; border: 2px dashed var(--border); border-radius: var(--radius); cursor: pointer;
+}
+.dropzone.over, .dropzone:focus-visible { border-color: var(--accent); background: var(--bg); }
+.file-list { list-style: none; padding: 0; margin: 0.5rem 0; }
+.file-list li { display: flex; gap: 0.5rem; align-items: center; padding: 0.15rem 0; }
+.form-message { color: var(--danger); min-height: 1.5em; }
+textarea { width: 100%; }
+.stages { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; list-style: none; padding: 0; margin: 0.5rem 0 0; }
+.stage-pending { color: var(--muted); }
+.stage-active { color: var(--accent); font-weight: 600; }
+.stage-done { color: var(--ok); }
+.stage-failed, .stage-cancelled, .error-text { color: var(--danger); }
+.state { font-weight: 600; }
+.state-completed { color: var(--ok); }
+.state-failed { color: var(--danger); }
+.tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.tabs [aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }

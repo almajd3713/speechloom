@@ -43,3 +43,8 @@ export function formatDateTime(iso, locale) {
 export function pluralize(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+// Uploads are stored as "001-name.ext"; show the name the user chose.
+export function displayName(name, isUpload) {
+  return isUpload ? name.replace(/^\d{3}-/, '') : name;
+}
