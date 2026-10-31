@@ -35,10 +35,15 @@ for result in results:
 ## Progress events
 
 `on_event` receives `StageEvent` objects with `job_id`, `source`, `stage`, `status`,
-`message`, `completed`, `total` and `timestamp`. The stages are `queued`, `validating`,
+`message`, `completed`, `total`, `timestamp`, `media_seconds` and `estimated_seconds`. The stages are `queued`, `validating`,
 `probing`, `normalizing`, `transcribing`, `translating` and `rendering`, and a job ends
 in `completed`, `failed`, `cancelled` or `interrupted`. Most events have the status
 `started` or `completed`; a job whose results already exist reports `skipped`.
+
+`media_seconds` is the file's duration in seconds once it is known, and `None` before that.
+`estimated_seconds` is set only on a `transcribing` start event handled by a `JobManager`
+that has timed earlier jobs, and is `None` otherwise (see the
+[HTTP API](http-api.md#progress-events) for how it is worked out).
 
 ## Cancellation
 
@@ -82,7 +87,12 @@ for check in report.checks:
 capabilities = service.capabilities()
 print(capabilities.translation, capabilities.diarization)
 print(capabilities.asr_languages, capabilities.translation_languages)
+print(capabilities.transcription)
 ```
+
+`capabilities.transcription` is `True` when the configured speech model file exists and the
+engine executable resolves. After changing the installation, call
+`service.replace_settings(settings)` to make later jobs and diagnostics use new `Settings`.
 
 ## Edit a transcript
 
