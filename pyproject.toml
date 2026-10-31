@@ -32,10 +32,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/almajd3/speechloom"
-Documentation = "https://github.com/almajd3/speechloom/tree/main/docs"
-Changelog = "https://github.com/almajd3/speechloom/blob/main/CHANGELOG.md"
-Issues = "https://github.com/almajd3/speechloom/issues"
+Homepage = "https://github.com/almajd3713/speechloom"
+Documentation = "https://github.com/almajd3713/speechloom/tree/main/docs"
+Changelog = "https://github.com/almajd3713/speechloom/blob/main/CHANGELOG.md"
+Issues = "https://github.com/almajd3713/speechloom/issues"
 
 [project.optional-dependencies]
 api = [
