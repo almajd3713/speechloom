@@ -20,15 +20,22 @@ from speechloom.api.server import (
     resolve_output_dir,
 )
 from speechloom.artifacts import sha256_file
-from speechloom.contracts import JobDetails, StageEvent
-from speechloom.errors import ConfigurationError
+from speechloom.contracts import JobDetails, SegmentEdit, ServiceCapabilities, StageEvent
+from speechloom.errors import ArtifactConflictError, ConfigurationError
 from speechloom.job_manager import JobManager
 from speechloom.jobs import JobResult
+from speechloom.languages import ASR_LANGUAGES, TRANSLATION_LANGUAGES
 
 
 class FixtureService:
-    def __init__(self, *, block: bool = False) -> None:
+    def __init__(
+        self, *, block: bool = False, conflict: bool = False, kept_audio: bool = False
+    ) -> None:
         self.block = block
+        self.conflict = conflict
+        self.kept_audio = kept_audio
+        self.saved_edits: list[tuple[Path, tuple[SegmentEdit, ...], bool]] = []
+        self.cleared: list[Path] = []
         self.entered = threading.Event()
         self.release = threading.Event()
 
@@ -66,6 +73,11 @@ class FixtureService:
                 }
             },
         }
+        if self.kept_audio:
+            audio = job_dir / ".work" / "audio.wav"
+            audio.parent.mkdir(parents=True, exist_ok=True)
+            audio.write_bytes(b"RIFFfixture")
+            manifest["normalized_audio"] = {"path": str(audio), "passthrough": False}
         (job_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return [JobResult(str(source), str(job_dir), "completed")]
 
@@ -73,6 +85,57 @@ class FixtureService:
         path = Path(job)
         manifest = path / "manifest.json" if path.is_dir() else path
         return JobDetails.from_manifest(json.loads(manifest.read_text(encoding="utf-8")))
+
+    def capabilities(self) -> ServiceCapabilities:
+        return ServiceCapabilities(
+            diarization=False,
+            translation=True,
+            formats=("json", "txt", "srt", "vtt"),
+            asr_languages=ASR_LANGUAGES,
+            translation_languages=TRANSLATION_LANGUAGES,
+        )
+
+    def save_edits(self, job, edits, *, merge=False) -> JobDetails:
+        if self.conflict:
+            raise ArtifactConflictError("Only completed jobs can be edited: fixture")
+        job_dir = Path(job)
+        self.saved_edits.append((job_dir, tuple(edits), merge))
+        edited = job_dir / "transcript.edited.txt"
+        edited.write_text(f"{edits[0].text}\n", encoding="utf-8")
+        manifest_path = job_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"]["edited.txt"] = {
+            "path": edited.name,
+            "size": edited.stat().st_size,
+            "sha256": sha256_file(edited),
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return self.inspect(job_dir)
+
+    def clear_edits(self, job) -> JobDetails:
+        job_dir = Path(job)
+        self.cleared.append(job_dir)
+        (job_dir / "transcript.edited.txt").unlink(missing_ok=True)
+        manifest_path = job_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["artifacts"].pop("edited.txt", None)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return self.inspect(job_dir)
+
+
+def _tree_bytes(path: Path) -> int:
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+
+async def _complete_json_job(client: httpx.AsyncClient, source: Path, **options) -> str:
+    submitted = await client.post(
+        "/v1/jobs", json={"inputs": [str(source)], "formats": ["txt"], **options}
+    )
+    assert submitted.status_code == 202, submitted.text
+    job_id = submitted.json()["id"]
+    job = await _wait_for_state(client, job_id, "completed")
+    assert job["state"] == "completed", job
+    return job_id
 
 
 async def _wait_for_state(client: httpx.AsyncClient, job_id: str, state: str) -> dict:
@@ -483,6 +546,379 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(too_many.status_code, 422)
                     self.assertEqual(too_many.json()["error"]["code"], "validation_error")
                     self.assertEqual(allowed.status_code, 202)
+            finally:
+                manager.close(cancel=True)
+
+    async def test_capabilities_report_features_and_languages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app, manager = self._app(Path(directory), FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    response = await client.get("/v1/capabilities")
+                    body = response.json()
+
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(body["features"], {"diarization": False, "translation": True})
+                    self.assertEqual(body["formats"], ["json", "txt", "srt", "vtt"])
+                    self.assertEqual(len(body["asr_languages"]), 25)
+                    self.assertIn("ar", body["translation_languages"])
+                    self.assertEqual(body["api_version"], "1")
+            finally:
+                manager.close(cancel=True)
+
+    async def test_edits_endpoint_saves_and_lists_edited_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            service = FixtureService()
+            app, manager = self._app(root, service)
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    job_id = await _complete_json_job(client, source)
+
+                    response = await client.put(
+                        f"/v1/jobs/{job_id}/edits",
+                        json={"segments": [{"index": 0, "text": "Hello"}]},
+                    )
+
+                    self.assertEqual(response.status_code, 200)
+                    self.assertIn("edited.txt", [item["name"] for item in response.json()["items"]])
+                    job_dir = root / "output" / "job-sample"
+                    self.assertEqual(
+                        service.saved_edits, [(job_dir, (SegmentEdit(0, "Hello"),), False)]
+                    )
+            finally:
+                manager.close(cancel=True)
+
+    async def test_edits_patch_merges_and_delete_clears(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            service = FixtureService()
+            app, manager = self._app(root, service)
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    job_id = await _complete_json_job(client, source)
+                    job_dir = root / "output" / "job-sample"
+
+                    patched = await client.patch(
+                        f"/v1/jobs/{job_id}/edits",
+                        json={"segments": [{"index": 0, "text": None}]},
+                    )
+                    self.assertEqual(patched.status_code, 200)
+                    self.assertEqual(
+                        service.saved_edits[-1], (job_dir, (SegmentEdit(0, None),), True)
+                    )
+
+                    cleared = await client.delete(f"/v1/jobs/{job_id}/edits")
+                    self.assertEqual(cleared.status_code, 204)
+                    self.assertEqual(cleared.content, b"")
+                    self.assertEqual(service.cleared, [job_dir])
+                    artifacts = (await client.get(f"/v1/jobs/{job_id}/artifacts")).json()["items"]
+                    self.assertNotIn("edited.txt", [item["name"] for item in artifacts])
+                    self.assertEqual(
+                        (await client.delete(f"/v1/jobs/{job_id}/edits")).status_code, 204
+                    )
+            finally:
+                manager.close(cancel=True)
+
+    async def test_edits_endpoint_rejects_active_jobs_and_bad_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            service = FixtureService(block=True)
+            app, manager = self._app(root, service)
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post(
+                        "/v1/jobs", json={"inputs": [str(source)], "formats": ["txt"]}
+                    )
+                    job_id = submitted.json()["id"]
+                    await _wait_until_entered(service)
+                    body = {"segments": [{"index": 0, "text": "Hi"}]}
+                    for response in (
+                        await client.put(f"/v1/jobs/{job_id}/edits", json=body),
+                        await client.patch(f"/v1/jobs/{job_id}/edits", json=body),
+                        await client.delete(f"/v1/jobs/{job_id}/edits"),
+                    ):
+                        self.assertEqual(response.status_code, 409)
+                        self.assertEqual(response.json()["error"]["code"], "job_not_completed")
+
+                    service.release.set()
+                    await _wait_for_state(client, job_id, "completed")
+                    missing = await client.put(
+                        f"/v1/jobs/{job_id}/edits", json={"result": 2, **body}
+                    )
+                    self.assertEqual(missing.status_code, 404)
+                    self.assertEqual(missing.json()["error"]["code"], "result_not_found")
+                    empty = await client.put(f"/v1/jobs/{job_id}/edits", json={"segments": []})
+                    self.assertEqual(empty.status_code, 422)
+                    self.assertEqual(empty.json()["error"]["code"], "validation_error")
+                    blank = await client.put(
+                        f"/v1/jobs/{job_id}/edits",
+                        json={"segments": [{"index": 0, "text": "   "}]},
+                    )
+                    self.assertEqual(blank.status_code, 422)
+                    self.assertEqual(blank.json()["error"]["code"], "invalid_job")
+            finally:
+                service.release.set()
+                manager.close(cancel=True)
+
+    async def test_edits_endpoint_maps_artifact_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            app, manager = self._app(root, FixtureService(conflict=True))
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    job_id = await _complete_json_job(client, source)
+
+                    response = await client.put(
+                        f"/v1/jobs/{job_id}/edits",
+                        json={"segments": [{"index": 0, "text": "Hi"}]},
+                    )
+
+                    self.assertEqual(response.status_code, 409)
+                    error = response.json()["error"]
+                    self.assertEqual(error["code"], "artifact_conflict")
+                    self.assertEqual(
+                        error["message"],
+                        "The job's artifacts cannot be changed in their current state",
+                    )
+            finally:
+                manager.close(cancel=True)
+
+    async def test_cors_allows_put_for_configured_origins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = FixtureService()
+            manager = JobManager(service, queue_size=4, media_workers=1)
+            app = create_app(
+                service,
+                manager,
+                ServerSettings(
+                    allowed_roots=(root,),
+                    allowed_origins=("http://localhost:5173",),
+                    staging_dir=root / "staging",
+                ),
+            )
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    response = await client.options(
+                        "/v1/jobs/x/edits",
+                        headers={
+                            "Origin": "http://localhost:5173",
+                            "Access-Control-Request-Method": "PUT",
+                        },
+                    )
+
+                    self.assertEqual(response.status_code, 200)
+                    allowed = response.headers["access-control-allow-methods"]
+                    self.assertIn("PUT", allowed)
+                    self.assertIn("PATCH", allowed)
+            finally:
+                manager.close(cancel=True)
+
+    async def test_media_serves_the_stored_upload_with_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post(
+                        "/v1/jobs",
+                        files=[("files", ("clip.wav", b"0123456789", "audio/wav"))],
+                        data={"options": json.dumps({"formats": ["txt"]})},
+                    )
+                    job_id = submitted.json()["id"]
+                    await _wait_for_state(client, job_id, "completed")
+
+                    full = await client.get(f"/v1/jobs/{job_id}/media")
+                    partial = await client.get(
+                        f"/v1/jobs/{job_id}/media", headers={"Range": "bytes=0-3"}
+                    )
+
+                    self.assertEqual((full.status_code, full.content), (200, b"0123456789"))
+                    self.assertEqual((partial.status_code, partial.content), (206, b"0123"))
+            finally:
+                manager.close(cancel=True)
+
+    async def test_media_serves_local_sources_inside_allowed_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    job_id = await _complete_json_job(client, source)
+
+                    response = await client.get(f"/v1/jobs/{job_id}/media")
+
+                    self.assertEqual((response.status_code, response.content), (200, b"media"))
+            finally:
+                manager.close(cancel=True)
+
+    async def test_media_is_unavailable_without_stored_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    job_id = await _complete_json_job(client, source)
+                    source.unlink()
+
+                    gone = await client.get(f"/v1/jobs/{job_id}/media")
+                    other = await client.get(f"/v1/jobs/{job_id}/media?result=2")
+
+                    self.assertEqual(gone.status_code, 404)
+                    self.assertEqual(gone.json()["error"]["code"], "media_unavailable")
+                    self.assertEqual(other.status_code, 404)
+                    self.assertEqual(other.json()["error"]["code"], "result_not_found")
+            finally:
+                manager.close(cancel=True)
+
+    async def test_media_falls_back_to_kept_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.wav"
+            source.write_bytes(b"media")
+            app, manager = self._app(root, FixtureService(kept_audio=True))
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    job_id = await _complete_json_job(client, source)
+                    source.unlink()
+
+                    response = await client.get(f"/v1/jobs/{job_id}/media")
+
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.headers["content-type"].startswith("audio/wav"))
+                    self.assertEqual(response.content, b"RIFFfixture")
+            finally:
+                manager.close(cancel=True)
+
+    async def test_storage_reports_totals_and_shares(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.wav").write_bytes(b"a")
+            (root / "b.wav").write_bytes(b"bb")
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    await _complete_json_job(client, root / "a.wav")
+                    await _complete_json_job(client, root / "b.wav")
+
+                    response = await client.get("/v1/storage")
+                    body = response.json()
+
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(len(body["jobs"]), 2)
+                    for entry in body["jobs"]:
+                        directory_name = f"job-{entry['inputs'][0].split('.')[0]}"
+                        self.assertEqual(
+                            entry["output_bytes"], _tree_bytes(root / "output" / directory_name)
+                        )
+                        self.assertEqual(entry["upload_bytes"], 0)
+                    self.assertEqual(
+                        body["total_bytes"], sum(entry["total_bytes"] for entry in body["jobs"])
+                    )
+                    self.assertAlmostEqual(sum(entry["share"] for entry in body["jobs"]), 1.0, delta=0.0002)
+                    totals = [entry["total_bytes"] for entry in body["jobs"]]
+                    self.assertEqual(totals, sorted(totals, reverse=True))
+                    self.assertGreater(body["free_bytes"], 0)
+            finally:
+                manager.close(cancel=True)
+
+    async def test_storage_counts_shared_directories_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "a.wav"
+            source.write_bytes(b"a")
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    older = await _complete_json_job(client, source, formats=["txt"])
+                    newer = await _complete_json_job(client, source, formats=["json"])
+                    job_dir = root / "output" / "job-a"
+
+                    body = (await client.get("/v1/storage")).json()
+                    by_id = {entry["id"]: entry for entry in body["jobs"]}
+
+                    self.assertEqual(by_id[newer]["output_bytes"], _tree_bytes(job_dir))
+                    self.assertEqual(by_id[older]["output_bytes"], 0)
+                    self.assertEqual(body["output_bytes"], _tree_bytes(job_dir))
+            finally:
+                manager.close(cancel=True)
+
+    async def test_storage_report_is_empty_without_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app, manager = self._app(Path(directory), FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    body = (await client.get("/v1/storage")).json()
+
+                    self.assertEqual(
+                        (body["total_bytes"], body["upload_bytes"], body["output_bytes"]), (0, 0, 0)
+                    )
+                    self.assertEqual(body["jobs"], [])
+            finally:
+                manager.close(cancel=True)
+
+    async def test_storage_counts_uploads_until_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post(
+                        "/v1/jobs",
+                        files=[("files", ("c.wav", b"x" * 1000, "audio/wav"))],
+                        data={"options": json.dumps({"formats": ["txt"]})},
+                    )
+                    job_id = submitted.json()["id"]
+                    await _wait_for_state(client, job_id, "completed")
+
+                    entry = (await client.get("/v1/storage")).json()["jobs"][0]
+                    self.assertGreaterEqual(entry["upload_bytes"], 1000)
+                    self.assertEqual(entry["output_bytes"], 0)
+
+                    self.assertEqual((await client.delete(f"/v1/jobs/{job_id}/upload")).status_code, 204)
+                    entry = (await client.get("/v1/storage")).json()["jobs"][0]
+                    self.assertEqual(entry["total_bytes"], 0)
             finally:
                 manager.close(cancel=True)
 

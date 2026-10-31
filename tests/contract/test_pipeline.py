@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import speechloom
 from speechloom.artifacts import sha256_file
-from speechloom.jobs import Pipeline, PipelineOptions, inspect_job
+from speechloom.jobs import EDITED_ARTIFACTS, Pipeline, PipelineOptions, inspect_job
 from speechloom.process import CommandResult
 
 
@@ -425,6 +425,28 @@ class PipelineContractTests(unittest.TestCase):
 
             self.assertTrue(second.skipped)
             self.assertEqual(hashing.call_count, 0)
+
+    def test_force_rerun_removes_edited_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "recording.mp4"
+            model = root / "parakeet.gguf"
+            source.write_bytes(b"media")
+            model.write_bytes(b"model")
+            tools = FakeTools()
+            options = PipelineOptions(output_dir=root / "out", model=model)
+
+            first = Pipeline(options, runner=tools).run([source])[0]
+            job_dir = Path(first.job_dir)
+            for filename in EDITED_ARTIFACTS.values():
+                (job_dir / filename).write_text("edited\n", encoding="utf-8")
+            forced = PipelineOptions(output_dir=root / "out", model=model, force=True)
+            Pipeline(forced, runner=tools).run([source])
+
+            for filename in EDITED_ARTIFACTS.values():
+                self.assertFalse((job_dir / filename).exists())
+            artifacts = inspect_job(job_dir)["artifacts"]
+            self.assertFalse(set(EDITED_ARTIFACTS) & set(artifacts))
 
 
 if __name__ == "__main__":

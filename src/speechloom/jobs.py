@@ -52,6 +52,12 @@ from .schema import SCHEMA_VERSION, Transcript, TranslatedSegment, Translation
 MANIFEST_SCHEMA_VERSION = 1
 # Bump only when the same inputs would produce different artifacts.
 PIPELINE_SEMANTICS_VERSION = 1
+EDITED_ARTIFACTS: dict[str, str] = {
+    "edited.json": "transcript.edited.json",
+    "edited.txt": "transcript.edited.txt",
+    "edited.srt": "subtitles.edited.srt",
+    "edited.vtt": "subtitles.edited.vtt",
+}
 
 
 @dataclass(frozen=True)
@@ -500,6 +506,9 @@ class Pipeline:
             raise ArtifactConflictError(f"Job output already exists: {job_dir}; use --resume or --force")
 
         job_dir.mkdir(parents=True, exist_ok=True)
+        if self.options.force:
+            for filename in EDITED_ARTIFACTS.values():
+                (job_dir / filename).unlink(missing_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
         manifest = existing if existing and not self.options.force else _new_manifest(
             job_id=job_id,
@@ -1001,7 +1010,18 @@ def _artifact_manifest(job_dir: Path) -> dict[str, Any]:
     translated_files.extend(sorted(job_dir.glob("translation.*.txt")))
     translated_files.extend(sorted(job_dir.glob("subtitles.*.srt")))
     translated_files.extend(sorted(job_dir.glob("subtitles.*.vtt")))
+    edited_names = set(EDITED_ARTIFACTS.values())
+    for key, filename in EDITED_ARTIFACTS.items():
+        path = job_dir / filename
+        if path.is_file():
+            output[key] = {
+                "path": path.name,
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
     for path in translated_files:
+        if path.name in edited_names:
+            continue
         output[path.name] = {
             "path": path.name,
             "size": path.stat().st_size,

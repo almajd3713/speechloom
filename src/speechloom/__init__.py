@@ -8,6 +8,8 @@ from .contracts import (
     CancellationController,
     CancellationToken,
     JobDetails,
+    SegmentEdit,
+    ServiceCapabilities,
     StageEvent,
     TranscriptionRequest,
 )
@@ -40,6 +42,8 @@ __all__ = [
     "JobQueueFullError",
     "ManagedJob",
     "JobResult",
+    "SegmentEdit",
+    "ServiceCapabilities",
     "Settings",
     "SetupManager",
     "SetupRequest",

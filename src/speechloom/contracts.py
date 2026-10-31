@@ -147,6 +147,37 @@ class JobDetails:
         return payload
 
 
+@dataclass(frozen=True)
+class ServiceCapabilities:
+    """Features and languages a configured service can offer."""
+
+    diarization: bool
+    translation: bool
+    formats: tuple[str, ...]
+    asr_languages: tuple[str, ...]
+    translation_languages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SegmentEdit:
+    """Replacement text for one canonical transcript segment; None restores the original text."""
+
+    index: int
+    text: str | None
+
+    def __post_init__(self) -> None:
+        if self.index < 0:
+            raise ConfigurationError("Segment index must not be negative")
+        if self.text is None:
+            return
+        text = " ".join(self.text.split())
+        if not 1 <= len(text) <= 1000:
+            raise ConfigurationError(
+                f"Edit for segment {self.index} must contain 1 to 1000 characters"
+            )
+        object.__setattr__(self, "text", text)
+
+
 def _normalize_language(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
