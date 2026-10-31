@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from speechloom.renderers import build_segments, render_srt, render_text, render_vtt
-from speechloom.schema import Transcript, Word
+from speechloom.renderers import (
+    build_segments,
+    render_segment_text,
+    render_srt,
+    render_text,
+    render_vtt,
+)
+from speechloom.schema import Segment, Transcript, Word
 
 
 class RendererTests(unittest.TestCase):
@@ -31,6 +37,14 @@ class RendererTests(unittest.TestCase):
         transcript = Transcript(text=" ".join(word.text for word in words), words=words, duration=4.0)
         for segment in build_segments(transcript):
             self.assertLessEqual(len(segment.text.splitlines()), 2)
+
+    def test_render_segment_text_without_speakers(self) -> None:
+        segments = [Segment("Hello,\nworld.", 0.0, 1.0), Segment("Again.", 1.0, 2.0)]
+        self.assertEqual(render_segment_text(segments), "Hello, world. Again.\n")
+
+    def test_render_segment_text_with_speakers(self) -> None:
+        segments = [Segment("Hi.", 0.0, 1.0, speaker=0), Segment("Yes.", 1.0, 2.0, speaker=1)]
+        self.assertEqual(render_segment_text(segments), "Speaker 0: Hi.\nSpeaker 1: Yes.\n")
 
 
 if __name__ == "__main__":

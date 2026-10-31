@@ -11,15 +11,36 @@ import speechloom
 from speechloom import (
     CancellationController,
     JobDetails,
+    SegmentEdit,
     Settings,
     StageEvent,
     TranscriptionRequest,
     TranscriptionService,
 )
 from speechloom.artifacts import sha256_file
-from speechloom.errors import ConfigurationError
+from speechloom.errors import ArtifactConflictError, ConfigurationError
 from speechloom.process import CommandResult
 from tests.contract.test_pipeline import FakeTools
+
+
+EDITED_FILES = (
+    "transcript.edited.json",
+    "transcript.edited.txt",
+    "subtitles.edited.srt",
+    "subtitles.edited.vtt",
+)
+
+
+class TwoSegmentTools(FakeTools):
+    @staticmethod
+    def transcript_payload() -> dict:
+        return {
+            "text": "One. Two.",
+            "words": [
+                {"word": "One.", "start_time": 0.0, "end_time": 0.4},
+                {"word": "Two.", "start_time": 2.0, "end_time": 2.4},
+            ],
+        }
 
 
 class TranscriptionServiceTests(unittest.TestCase):
@@ -297,6 +318,153 @@ class TranscriptionServiceTests(unittest.TestCase):
             self.assertTrue(second.skipped)
             self.assertEqual(hashing.call_count, 0)
 
+    def test_service_reports_installed_features(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "model.gguf").write_bytes(b"model")
+            (root / "diar.gguf").write_bytes(b"diar")
+            settings = Settings(
+                model=str(root / "model.gguf"),
+                diar_model=str(root / "diar.gguf"),
+                translation_model=str(root / "missing.gguf"),
+            )
+
+            capabilities = TranscriptionService(settings).capabilities()
+
+            self.assertTrue(capabilities.diarization)
+            self.assertFalse(capabilities.translation)
+            self.assertEqual(capabilities.translation_languages, ())
+            self.assertEqual(len(capabilities.asr_languages), 25)
+            self.assertEqual(capabilities.formats, ("json", "txt", "srt", "vtt"))
+
+            (root / "translate.gguf").write_bytes(b"translate")
+            settings = Settings(
+                model=str(root / "model.gguf"),
+                diar_model=str(root / "diar.gguf"),
+                translation_model=str(root / "translate.gguf"),
+            )
+            capabilities = TranscriptionService(settings).capabilities()
+
+            self.assertTrue(capabilities.translation)
+            self.assertEqual(len(capabilities.translation_languages), 37)
+            self.assertIn("ar", capabilities.translation_languages)
+
+    def _transcribed(self, root: Path, tools: FakeTools) -> tuple[TranscriptionService, Path]:
+        source = root / "recording.mp4"
+        model = root / "model.gguf"
+        source.write_bytes(b"media")
+        model.write_bytes(b"model")
+        service = TranscriptionService(
+            Settings(model=str(model), output_dir=str(root / "out")),
+            runner=tools,
+        )
+        result = service.transcribe(TranscriptionRequest(inputs=(source,)))[0]
+        self.assertIsNone(result.error)
+        return service, Path(result.job_dir)
+
+    def test_save_edits_writes_edited_artifacts_beside_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, job_dir = self._transcribed(Path(directory), FakeTools())
+            canonical = (job_dir / "transcript.json").read_bytes()
+
+            details = service.save_edits(job_dir, [SegmentEdit(0, "Hello,   world!")])
+
+            names = {item.name for item in details.artifacts}
+            self.assertTrue({"edited.json", "edited.txt", "edited.srt", "edited.vtt"} <= names)
+            self.assertEqual((job_dir / "transcript.json").read_bytes(), canonical)
+            self.assertEqual(
+                (job_dir / "transcript.edited.txt").read_text(encoding="utf-8"), "Hello, world!\n"
+            )
+            self.assertIn(
+                "Hello, world!", (job_dir / "subtitles.edited.srt").read_text(encoding="utf-8")
+            )
+            edited = json.loads((job_dir / "transcript.edited.json").read_text(encoding="utf-8"))
+            self.assertEqual(edited["edited_indices"], [0])
+            manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["edits"]["edited_segments"], 1)
+
+    def test_save_edits_replaces_previous_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, job_dir = self._transcribed(Path(directory), TwoSegmentTools())
+
+            service.save_edits(job_dir, [SegmentEdit(0, "First")])
+            service.save_edits(job_dir, [SegmentEdit(1, "Second")])
+
+            self.assertEqual(
+                (job_dir / "transcript.edited.txt").read_text(encoding="utf-8"), "One. Second\n"
+            )
+
+    def test_save_edits_merges_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, job_dir = self._transcribed(Path(directory), TwoSegmentTools())
+            text_path = job_dir / "transcript.edited.txt"
+
+            service.save_edits(job_dir, [SegmentEdit(0, "First")])
+            service.save_edits(job_dir, [SegmentEdit(1, "Second")], merge=True)
+            self.assertEqual(text_path.read_text(encoding="utf-8"), "First Second\n")
+
+            service.save_edits(job_dir, [SegmentEdit(0, None)], merge=True)
+            self.assertEqual(text_path.read_text(encoding="utf-8"), "One. Second\n")
+            edited = json.loads((job_dir / "transcript.edited.json").read_text(encoding="utf-8"))
+            self.assertEqual(edited["edited_indices"], [1])
+
+            details = service.save_edits(job_dir, [SegmentEdit(1, None)], merge=True)
+            for filename in EDITED_FILES:
+                self.assertFalse((job_dir / filename).exists())
+            manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertNotIn("edits", manifest)
+            self.assertFalse([item.name for item in details.artifacts if item.name.startswith("edited.")])
+
+    def test_clear_edits_removes_edited_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, job_dir = self._transcribed(Path(directory), FakeTools())
+            service.save_edits(job_dir, [SegmentEdit(0, "Changed")])
+
+            service.clear_edits(job_dir)
+
+            for filename in EDITED_FILES:
+                self.assertFalse((job_dir / filename).exists())
+            manifest = json.loads((job_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertNotIn("edits", manifest)
+            service.clear_edits(job_dir)
+
+    def test_save_edits_rejects_invalid_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, job_dir = self._transcribed(Path(directory), FakeTools())
+
+            with self.assertRaisesRegex(ConfigurationError, "At least one segment edit is required"):
+                service.save_edits(job_dir, [])
+            with self.assertRaisesRegex(
+                ConfigurationError, "Segment 5 does not exist; the transcript has 1 segments"
+            ):
+                service.save_edits(job_dir, [SegmentEdit(5, "x")])
+            with self.assertRaisesRegex(ConfigurationError, "Segment 0 is edited more than once"):
+                service.save_edits(job_dir, [SegmentEdit(0, "a"), SegmentEdit(0, "b")])
+            with self.assertRaisesRegex(
+                ConfigurationError, "Edit for segment 0 must contain 1 to 1000 characters"
+            ):
+                SegmentEdit(0, "   ")
+            with self.assertRaisesRegex(ConfigurationError, "Segment index must not be negative"):
+                SegmentEdit(-1, "x")
+            self.assertIsNone(SegmentEdit(0, None).text)
+
+    def test_save_edits_requires_a_completed_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service, job_dir = self._transcribed(Path(directory), FakeTools())
+            manifest_path = job_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["state"] = "failed"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ArtifactConflictError, "^Only completed jobs can be edited"
+            ):
+                service.save_edits(job_dir, [SegmentEdit(0, "x")])
+            with self.assertRaisesRegex(
+                ArtifactConflictError, "^Only completed jobs can be edited"
+            ):
+                service.clear_edits(job_dir)
+
     def test_python_caller_can_run_doctor_without_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -368,6 +536,8 @@ class TranscriptionServiceTests(unittest.TestCase):
             "JobQueueFullError",
             "JobResult",
             "ManagedJob",
+            "SegmentEdit",
+            "ServiceCapabilities",
             "Settings",
             "SetupManager",
             "SetupRequest",

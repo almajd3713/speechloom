@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from ..schema import Transcript, Translation
+from typing import Sequence
+
+from ..schema import Segment, Transcript, Translation
 
 
 def render_text(transcript: Transcript) -> str:
@@ -32,6 +34,19 @@ def render_translation_text(translation: Translation) -> str:
     for segment in translation.segments:
         label = segment.speaker if segment.speaker is not None else "unknown"
         lines.append(f"Speaker {label}: {segment.text}")
+    return "\n".join(lines) + "\n"
+
+
+def render_segment_text(segments: Sequence[Segment]) -> str:
+    if not segments:
+        return ""
+    texts = [" ".join(segment.text.split()) for segment in segments]
+    if not any(segment.speaker is not None for segment in segments):
+        return " ".join(texts) + "\n"
+    lines = []
+    for segment, text in zip(segments, texts):
+        label = segment.speaker if segment.speaker is not None else "unknown"
+        lines.append(f"Speaker {label}: {text}")
     return "\n".join(lines) + "\n"
 
 

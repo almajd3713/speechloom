@@ -1,11 +1,12 @@
 """Canonical transcript renderers."""
 
 from .subtitles import build_segments, render_srt, render_vtt
-from .text import render_text, render_translation_text
+from .text import render_segment_text, render_text, render_translation_text
 
 
 __all__ = [
     "build_segments",
+    "render_segment_text",
     "render_srt",
     "render_text",
     "render_translation_text",
