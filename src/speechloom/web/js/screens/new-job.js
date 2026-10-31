@@ -58,6 +58,7 @@ export function mount(container, { api, capabilities }) {
   const diarizeHint = h('span', { class: 'muted' });
   const translate = h('input', { type: 'checkbox', id: 'translate' });
   const translateHint = h('span', { class: 'muted' });
+  const languageRow = h('div', { class: 'row' });
   const source = h('select', { 'aria-label': 'Spoken language' });
   const target = h('select', { 'aria-label': 'Translate to' });
   const adv = {
@@ -89,6 +90,7 @@ export function mount(container, { api, capabilities }) {
     if (!canTranslate) translate.checked = false;
     replace(translateHint, canTranslate ? '' : caps ? ' Install the translation feature in Setup to use this.' : '');
     source.disabled = target.disabled = !translate.checked;
+    languageRow.hidden = !translate.checked;
     pathsBox.hidden = caps?.local_path_input !== true;
     const ready = features.transcription !== false;
     submit.disabled = busy || !ready;
@@ -158,6 +160,7 @@ export function mount(container, { api, capabilities }) {
   }
 
   const row = (...children) => h('div', { class: 'row' }, ...children);
+  languageRow.append(h('label', {}, 'Spoken language ', source), h('label', {}, 'Translate to ', target));
   const form = h('form', { onsubmit: onSubmit },
     h('div', { class: 'card' }, drop, picker, summary, list, progress),
     pathsBox,
@@ -167,7 +170,7 @@ export function mount(container, { api, capabilities }) {
       h('h2', {}, 'Options'),
       row(h('label', {}, diarize, ' Label speakers'), diarizeHint),
       row(h('label', {}, translate, ' Translate'), translateHint),
-      row(h('label', {}, 'Spoken language ', source), h('label', {}, 'Translate to ', target)),
+      languageRow,
       h('details', {}, h('summary', {}, 'Advanced'),
         row(h('label', {}, 'Audio stream ', adv.audioStream), h('label', {}, 'Workers ', adv.workers)),
         row(h('label', {}, adv.resume, ' Resume earlier work')),
