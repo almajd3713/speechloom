@@ -88,7 +88,7 @@ class PythonReleaseContractTests(unittest.TestCase):
     def test_typed_marker_and_registry_are_declared_as_package_data(self) -> None:
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-        self.assertIn('speechloom = ["data/*.json", "py.typed"]', pyproject)
+        self.assertIn('speechloom = ["data/*.json", "py.typed", "web/*", "web/**/*"]', pyproject)
         self.assertTrue((PROJECT_ROOT / "src/speechloom/py.typed").is_file())
 
     def test_package_version_is_semantic_and_synchronized(self) -> None:

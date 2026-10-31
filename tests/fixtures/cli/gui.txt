@@ -1,0 +1,11 @@
+usage: speechloom gui [-h] [--port PORT] [--allow-root ALLOW_ROOT]
+                      [--max-upload-mb MAX_UPLOAD_MB] [--no-browser]
+
+options:
+  -h, --help            show this help message and exit
+  --port PORT
+  --allow-root ALLOW_ROOT
+                        Let the interface use local paths below this root
+                        (repeatable)
+  --max-upload-mb MAX_UPLOAD_MB
+  --no-browser          Do not open the interface in a browser

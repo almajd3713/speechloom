@@ -99,6 +99,7 @@ jobs:
           PIP_NO_INDEX=1 /tmp/speechloom-api/bin/python \
             scripts/verify_offline_import.py speechloom speechloom.api fastapi
           PIP_NO_INDEX=1 /tmp/speechloom-api/bin/speechloom serve --help
+          PIP_NO_INDEX=1 /tmp/speechloom-api/bin/speechloom gui --help
           test ! -e /tmp/speechloom-api-state
       - uses: actions/upload-artifact@v7
         with:

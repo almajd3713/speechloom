@@ -53,7 +53,7 @@ speechloom = "speechloom.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-speechloom = ["data/*.json", "py.typed"]
+speechloom = ["data/*.json", "py.typed", "web/*", "web/**/*"]
 
 [tool.setuptools.data-files]
 "share/speechloom/scripts" = ["scripts/*.sh"]

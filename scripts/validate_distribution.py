@@ -22,6 +22,7 @@ WHEEL_REQUIRED = {
     "speechloom/cli.py",
     "speechloom/api/server.py",
     "speechloom/data/registry.json",
+    "speechloom/web/index.html",
     "speechloom/py.typed",
 }
 SDIST_REQUIRED = {
@@ -31,6 +32,7 @@ SDIST_REQUIRED = {
     "scripts/bootstrap_runtime.sh",
     "src/speechloom/api/server.py",
     "src/speechloom/data/registry.json",
+    "src/speechloom/web/index.html",
     "src/speechloom/py.typed",
 }
 BANNED_PARTS = {

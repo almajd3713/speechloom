@@ -18,7 +18,13 @@ from uuid import uuid4
 
 from fastapi import Body, FastAPI, Header, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
@@ -51,6 +57,24 @@ from .setup_runner import SetupEvent, SetupRunner
 
 
 API_VERSION = "1"
+WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
+WEB_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-cache",
+}
+WEB_MEDIA_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+}
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     401: {"model": ErrorResponse},
     403: {"model": ErrorResponse},
@@ -148,6 +172,26 @@ def create_app(
             allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
         )
     app.add_middleware(_BoundaryMiddleware, settings=settings)
+
+    if _is_loopback(settings.host):
+
+        @app.get("/", include_in_schema=False)
+        @app.get("/ui", include_in_schema=False)
+        async def ui_redirect() -> RedirectResponse:
+            return RedirectResponse("/ui/", status_code=307)
+
+        @app.api_route("/ui/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+        async def ui_asset(asset_path: str) -> FileResponse:
+            path = _web_asset(asset_path or "index.html")
+            if path is None:
+                raise ApiError(404, "not_found", "Not found")
+            return FileResponse(
+                path,
+                media_type=WEB_MEDIA_TYPES.get(path.suffix)
+                or mimetypes.guess_type(path.name)[0]
+                or "application/octet-stream",
+                headers=WEB_HEADERS,
+            )
 
     @app.get(
         "/v1/health",
@@ -575,6 +619,14 @@ def run_server(settings: ServerSettings, *, config_path: Path | None = None) -> 
         uvicorn.run(app, host=configured.host, port=configured.port, workers=1)
     finally:
         manager.close(wait=True, cancel=True)
+
+
+def _web_asset(relative: str) -> Path | None:
+    try:
+        path = (WEB_ROOT / relative).resolve()
+    except (OSError, ValueError):
+        return None
+    return path if WEB_ROOT in path.parents and path.is_file() else None
 
 
 def _load_service_settings(config_path: Path | None) -> Settings:
