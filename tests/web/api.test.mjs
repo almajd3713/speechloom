@@ -240,3 +240,42 @@ test('store notifies subscribers until they unsubscribe', () => {
   assert.deepEqual(seen, [2]);
   assert.equal(store.get(), 3);
 });
+
+test('mediaType gives the content type, or null when there is nothing to play', async () => {
+  const answers = [
+    () => new Response(null, { status: 206, headers: { 'Content-Type': 'video/mp4' } }),
+    () => json(404, { error: { code: 'media_unavailable', message: 'No playable media' } }),
+    () => { throw new TypeError('offline'); },
+  ];
+  const calls = [];
+  const client = createClient({ fetchImpl: async (path, init) => { calls.push([init.method, path]); return answers.shift()(); } });
+
+  assert.equal(await client.mediaType('j', 1), 'video/mp4');
+  assert.equal(await client.mediaType('j', 2), null);
+  assert.equal(await client.mediaType('j', 1), null);
+  assert.deepEqual(calls[0], ['GET', '/v1/jobs/j/media']);
+  assert.deepEqual(calls[1], ['GET', '/v1/jobs/j/media?result=2']);
+});
+
+test('a clean close without an end event stops when onClosed says the work is over', async () => {
+  let calls = 0;
+  const client = createClient({
+    fetchImpl: async () => {
+      calls += 1;
+      return stream([event(1, { stage: 'completed', source: 'a.wav' })]); // a recovered job: no end marker
+    },
+    sleep: async () => {},
+  });
+  const seen = [];
+  await client.streamJobEvents('j', { onEvent: (d) => seen.push(d.stage), isDone: isJobEnd, onClosed: async () => true });
+  assert.equal(calls, 1);
+  assert.deepEqual(seen, ['completed']);
+
+  let asked = 0;
+  const reopen = createClient({
+    fetchImpl: async () => stream([event(1, { stage: 'queued', source: 'a.wav' })]),
+    sleep: async () => {},
+  });
+  await reopen.streamJobEvents('j', { onEvent() {}, isDone: isJobEnd, onClosed: async () => (asked += 1) >= 2 });
+  assert.equal(asked, 2);
+});

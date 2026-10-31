@@ -76,8 +76,9 @@ export function createClient({
   };
   const job = (id) => `/v1/jobs/${encodeURIComponent(id)}`;
 
-  // Reads an event stream, reconnecting with Last-Event-ID until `isDone(data)` is true.
-  async function streamEvents(path, { onEvent, isDone, signal, maxFailures = 5, retryMs = 1000 }) {
+  // Reads an event stream, reconnecting with Last-Event-ID until `isDone(data)` is true or
+  // `onClosed()` (asked when a stream closes without an end event) says there is nothing more.
+  async function streamEvents(path, { onEvent, isDone, onClosed, signal, maxFailures = 5, retryMs = 1000 }) {
     let lastEventId = null;
     let failures = 0;
     let finished = false;
@@ -113,6 +114,9 @@ export function createClient({
           parser.feed(decoder.decode(value, { stream: true }));
         }
         parser.end();
+        // A clean close without an end event: the server may simply have nothing more to say
+        // (a job recovered after a restart has one event and no end marker), so ask it.
+        if (!finished && onClosed && (await onClosed())) finished = true;
         broke = !finished;
       } catch (error) {
         if (error && error.name === 'AbortError') return;
@@ -170,6 +174,17 @@ export function createClient({
       const text = await response.text();
       if (!response.ok) throw errorFromResponse(response.status, response.statusText, text);
       return text;
+    },
+    // The stored media's content type, or null when there is none to play. Asks for one byte: the
+    // media route answers GET and range requests, not HEAD.
+    mediaType: async (id, result, signal) => {
+      try {
+        const response = await send(`${job(id)}/media${query({ result: result > 1 ? result : undefined })}`, { method: 'GET', headers: { Range: 'bytes=0-0' }, signal });
+        return response.ok ? response.headers.get('Content-Type') : null;
+      } catch (error) {
+        if (error && error.name === 'AbortError') throw error;
+        return null;
+      }
     },
     mediaUrl: (id, result) => `${job(id)}/media${query({ result: result > 1 ? result : undefined })}`,
     saveEdits: (id, result, segments) =>

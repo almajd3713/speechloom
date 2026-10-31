@@ -167,3 +167,29 @@ textarea { width: 100%; }
 .state-failed { color: var(--danger); }
 .tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .tabs [aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+
+.editor-bar { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center; margin: 0.5rem 0 1rem; }
+.save-status.save-failed { color: var(--danger); }
+.editor { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: 1rem; align-items: start; }
+.editor:has(.player[hidden]), .editor:has(.player.no-media) { grid-template-columns: 1fr; }
+.player { position: sticky; top: 0.5rem; }
+.player video, .player audio { width: 100%; }
+.lines { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.line {
+  display: grid; grid-template-columns: 4rem 1fr auto; gap: 0.5rem; padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border); content-visibility: auto; contain-intrinsic-size: auto 3.2rem;
+}
+.line:last-child { border-bottom: none; }
+.line.current { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.line.edited .text { border-left: 3px solid var(--accent); padding-left: 0.4rem; }
+.line.invalid .text { border-left-color: var(--danger); }
+.line .time { border: none; background: none; color: var(--accent); padding: 0.1rem 0.25rem; text-align: left; font-variant-numeric: tabular-nums; }
+.line .text { outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+.line .text:focus { background: var(--bg); }
+.line .speaker { font-size: 0.8rem; font-weight: 600; color: var(--muted); display: block; }
+.line .translation { color: var(--muted); font-size: 0.9rem; margin-top: 0.15rem; }
+.line-error { color: var(--danger); font-size: 0.85rem; }
+.line .revert { font-size: 0.8rem; padding: 0.15rem 0.5rem; align-self: start; }
+@media (max-width: 52rem) { .editor { grid-template-columns: 1fr; } .player { position: static; } }
+
+[hidden] { display: none !important; }

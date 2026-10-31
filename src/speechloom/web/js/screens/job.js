@@ -76,21 +76,28 @@ export function mount(container, { api, route }) {
     replace(errorBox, error.message);
   }
 
+  let paintDownloads = null;
+
+  async function fetchGroups() {
+    const items = (await api.listArtifacts(id)).items;
+    return groupArtifacts(items, Math.max(1, job.results.length));
+  }
+
   async function renderResults() {
     if (job.state !== 'completed' && job.state !== 'failed') { replace(results); return; }
-    let items = [];
-    try { items = (await api.listArtifacts(id)).items; } catch (error) { return fail(error); }
-    const groups = groupArtifacts(items, Math.max(1, job.results.length));
+    let groups;
+    try { groups = await fetchGroups(); } catch (error) { return fail(error); }
     const panel = h('div');
     const tabs = h('div', { class: 'tabs', role: 'tablist' });
-    const show = (group) => {
-      activeResult = group.result;
+    const paint = (all) => {
+      const group = all[activeResult - 1] ?? all[0];
       replace(panel, h('ul', {}, group.items.map((item) => h('li', {},
         h('a', { href: api.artifactUrl(id, item.name), download: item.filename }, formatLabel(item.label)), ' ',
         h('span', { class: 'muted' }, item.size == null ? '' : formatBytes(item.size))))));
-      replace(tabs, groups.length > 1 ? groups.map((g) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(g.result === activeResult), onclick: () => { show(g); mountEditor(); } }, show(job.results[g.result - 1]?.source ?? `File ${g.result}`))) : null);
+      replace(tabs, all.length > 1 ? all.map((g) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(g.result === activeResult), onclick: () => { activeResult = g.result; paint(all); mountEditor(); } }, show(job.results[g.result - 1]?.source ?? `File ${g.result}`))) : null);
     };
-    show(groups[activeResult - 1] ?? groups[0]);
+    paintDownloads = async () => { try { paint(await fetchGroups()); } catch { /* the next full load reports it */ } };
+    paint(groups);
     replace(results, h('h2', {}, 'Downloads'), tabs, panel);
     mountEditor();
   }
@@ -99,7 +106,7 @@ export function mount(container, { api, route }) {
     editorStop?.();
     editorStop = null;
     if (job.state !== 'completed') return;
-    editorStop = editor.mount(editorBox, { api, jobId: id, result: activeResult, resultCount: Math.max(1, job.results.length) });
+    editorStop = editor.mount(editorBox, { api, jobId: id, result: activeResult, resultCount: Math.max(1, job.results.length), onSaved: () => paintDownloads?.() });
   }
 
   function stopAll() {
@@ -117,6 +124,7 @@ export function mount(container, { api, route }) {
       await api.streamJobEvents(id, {
         signal: controller.signal,
         isDone: isJobEnd,
+        onClosed: async () => !ACTIVE.has((await api.getJob(id)).state),
         onEvent: (data) => { tracker.apply(data); renderStages(); renderBar(); },
       });
     } catch (error) { return fail(error); }
