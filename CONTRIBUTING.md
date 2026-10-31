@@ -32,7 +32,7 @@ The web interface in `src/speechloom/web/` is plain ES modules with no build ste
 
 ```bash
 find src/speechloom/web -name '*.js' -print0 | xargs -0 -n1 node --check
-node --test tests/web/
+node --test 'tests/web/*.test.mjs'
 ```
 
 Keep logic that needs no DOM (parsing, progress maths, edit rules) in modules that Node can

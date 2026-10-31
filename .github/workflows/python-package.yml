@@ -57,7 +57,7 @@ jobs:
       - name: Check module syntax
         run: find src/speechloom/web -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Run interface unit tests
-        run: node --test tests/web/
+        run: node --test 'tests/web/*.test.mjs'
 
   distribution:
     runs-on: ubuntu-22.04
