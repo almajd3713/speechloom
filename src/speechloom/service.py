@@ -71,6 +71,10 @@ class TranscriptionService:
             / FINGERPRINT_CACHE_FILENAME,
         )
 
+    def replace_settings(self, settings: Settings) -> None:
+        """Use ``settings`` for jobs and diagnostics that start from now on."""
+        self._settings = settings
+
     def transcribe(
         self,
         request: TranscriptionRequest,
