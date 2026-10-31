@@ -23,6 +23,16 @@ class JobCreateRequest(BaseModel):
     fail_fast: bool = False
 
 
+class SegmentEditModel(BaseModel):
+    index: int = Field(ge=0)
+    text: str | None = Field(min_length=1, max_length=1000)
+
+
+class EditRequest(BaseModel):
+    result: int = Field(default=1, ge=1)
+    segments: list[SegmentEditModel] = Field(min_length=1, max_length=10000)
+
+
 class ResultResponse(BaseModel):
     source: str
     state: str
@@ -73,6 +83,28 @@ class CapabilitiesResponse(BaseModel):
     progress_events: str
     cancellation: bool
     artifact_downloads: bool
+    features: dict[str, bool]
+    formats: list[str]
+    asr_languages: list[str]
+    translation_languages: list[str]
+
+
+class StorageJobResponse(BaseModel):
+    id: str
+    state: str
+    inputs: list[str]
+    upload_bytes: int
+    output_bytes: int
+    total_bytes: int
+    share: float
+
+
+class StorageResponse(BaseModel):
+    total_bytes: int
+    upload_bytes: int
+    output_bytes: int
+    free_bytes: int
+    jobs: list[StorageJobResponse]
 
 
 class ErrorBody(BaseModel):

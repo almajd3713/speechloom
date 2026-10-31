@@ -8,10 +8,12 @@ from dataclasses import asdict, dataclass, replace
 import hmac
 import ipaddress
 import json
+import mimetypes
+import os
 from pathlib import Path
 import re
 import shutil
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Sequence
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, Query, Request
@@ -21,7 +23,7 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from speechloom.config import load_managed_settings
-from speechloom.contracts import ArtifactDetails, JobDetails, TranscriptionRequest
+from speechloom.contracts import ArtifactDetails, JobDetails, SegmentEdit, TranscriptionRequest
 from speechloom.errors import ConfigurationError
 from speechloom.fingerprints import FINGERPRINT_CACHE_FILENAME
 from speechloom.job_manager import TERMINAL_STATES, JobEvent, JobManager, ManagedJob
@@ -32,11 +34,13 @@ from .errors import ApiError, install_error_handlers
 from .models import (
     ArtifactListResponse,
     CapabilitiesResponse,
+    EditRequest,
     ErrorResponse,
     HealthResponse,
     JobCreateRequest,
     JobListResponse,
     JobResponse,
+    StorageResponse,
 )
 
 
@@ -121,7 +125,7 @@ def create_app(
             CORSMiddleware,
             allow_origins=list(settings.allowed_origins),
             allow_credentials=False,
-            allow_methods=["GET", "POST", "DELETE"],
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
             allow_headers=["Authorization", "Content-Type", "Last-Event-ID"],
         )
     app.add_middleware(_BoundaryMiddleware, settings=settings)
@@ -142,6 +146,7 @@ def create_app(
         tags=["system"],
     )
     async def capabilities() -> dict[str, Any]:
+        reported = service.capabilities()
         return {
             "api_version": API_VERSION,
             "local_path_input": _is_loopback(settings.host) and bool(policy.roots),
@@ -149,7 +154,30 @@ def create_app(
             "progress_events": "sse",
             "cancellation": True,
             "artifact_downloads": True,
+            "features": {
+                "diarization": reported.diarization,
+                "translation": reported.translation,
+            },
+            "formats": list(reported.formats),
+            "asr_languages": list(reported.asr_languages),
+            "translation_languages": list(reported.translation_languages),
         }
+
+    @app.get(
+        "/v1/storage",
+        response_model=StorageResponse,
+        responses=ERROR_RESPONSES,
+        tags=["system"],
+    )
+    async def storage() -> dict[str, Any]:
+        jobs = manager.list(offset=0, limit=max(1, manager.count()))
+        report = await asyncio.to_thread(_storage_report, jobs, staging_dir)
+        anchor = next(
+            (path for path in (staging_dir, *staging_dir.parents) if path.exists()),
+            Path(staging_dir.anchor or "."),
+        )
+        report["free_bytes"] = shutil.disk_usage(anchor).free
+        return report
 
     @app.post(
         "/v1/jobs",
@@ -319,6 +347,78 @@ def create_app(
             raise ApiError(404, "artifact_not_found", "Artifact not found")
         return FileResponse(item.path, filename=item.path.name)
 
+    @app.put(
+        "/v1/jobs/{job_id}/edits",
+        response_model=ArtifactListResponse,
+        responses=ERROR_RESPONSES,
+        tags=["artifacts"],
+    )
+    async def save_edits(job_id: str, payload: EditRequest) -> dict[str, Any]:
+        return await _apply_edits(job_id, payload, merge=False)
+
+    @app.patch(
+        "/v1/jobs/{job_id}/edits",
+        response_model=ArtifactListResponse,
+        responses=ERROR_RESPONSES,
+        tags=["artifacts"],
+    )
+    async def merge_edits(job_id: str, payload: EditRequest) -> dict[str, Any]:
+        return await _apply_edits(job_id, payload, merge=True)
+
+    @app.delete(
+        "/v1/jobs/{job_id}/edits",
+        status_code=204,
+        responses=ERROR_RESPONSES,
+        tags=["artifacts"],
+    )
+    async def clear_edits(job_id: str, result: int = Query(default=1, ge=1)) -> Response:
+        job = _completed_job(job_id)
+        await asyncio.to_thread(service.clear_edits, _result_job_dir(job, result))
+        return Response(status_code=204)
+
+    @app.get(
+        "/v1/jobs/{job_id}/media",
+        responses={**ERROR_RESPONSES, 200: {"content": {"application/octet-stream": {}}}},
+        tags=["artifacts"],
+    )
+    async def media(job_id: str, result: int = Query(default=1, ge=1)) -> FileResponse:
+        job = manager.get(job_id)
+        finished = job.results[result - 1] if result <= len(job.results) else None
+        if finished is not None and finished.source:
+            source = Path(finished.source)
+        elif result <= len(job.inputs):
+            source = job.inputs[result - 1]
+        else:
+            raise ApiError(404, "result_not_found", "Result not found")
+        if source.is_file() and _upload_dir(source, staging_dir) is not None:
+            return _media_response(source)
+        if _is_loopback(settings.host) and source.is_file() and policy.allows(source):
+            return _media_response(source)
+        if finished is not None and finished.job_dir:
+            job_dir = Path(finished.job_dir).expanduser().resolve()
+            try:
+                audio = service.inspect(job_dir).to_dict().get("normalized_audio")
+            except Exception:
+                audio = None
+            if isinstance(audio, dict) and isinstance(audio.get("path"), str):
+                path = Path(audio["path"]).resolve()
+                if path.is_file() and (job_dir == path or job_dir in path.parents):
+                    return FileResponse(path, media_type="audio/wav", filename="audio.wav")
+        raise ApiError(404, "media_unavailable", "No playable media is stored for this job")
+
+    def _completed_job(job_id: str) -> ManagedJob:
+        job = manager.get(job_id)
+        if job.state != "completed":
+            raise ApiError(409, "job_not_completed", "Only completed jobs can be edited")
+        return job
+
+    async def _apply_edits(job_id: str, payload: EditRequest, *, merge: bool) -> dict[str, Any]:
+        job = _completed_job(job_id)
+        job_dir = _result_job_dir(job, payload.result)
+        edits = [SegmentEdit(item.index, item.text) for item in payload.segments]
+        await asyncio.to_thread(lambda: service.save_edits(job_dir, edits, merge=merge))
+        return {"items": [item.public for item in _artifact_catalog(service, manager.get(job_id)).values()]}
+
     return app
 
 
@@ -384,6 +484,10 @@ class _PathPolicy:
         path = Path(raw).expanduser().resolve(strict=False)
         self._require_allowed(path)
         return path
+
+    def allows(self, path: Path) -> bool:
+        resolved = path.expanduser().resolve()
+        return any(resolved == root or root in resolved.parents for root in self.roots)
 
     def _require_allowed(self, path: Path) -> None:
         if not any(path == root or root in path.parents for root in self.roots):
@@ -530,6 +634,80 @@ def _job_upload_dirs(job: ManagedJob, staging_dir: Path) -> tuple[Path, ...]:
         if directory is not None and directory.is_dir():
             directories[directory] = None
     return tuple(directories)
+
+
+def _result_job_dir(job: ManagedJob, result: int) -> Path:
+    if 1 <= result <= len(job.results) and job.results[result - 1].job_dir:
+        return Path(job.results[result - 1].job_dir)
+    raise ApiError(404, "result_not_found", "Result not found")
+
+
+def _directory_bytes(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    total = 0
+    for current, _, names in os.walk(path):
+        for name in names:
+            entry = Path(current) / name
+            if entry.is_symlink():
+                continue
+            try:
+                total += entry.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _storage_report(jobs: Sequence[ManagedJob], staging_dir: Path) -> dict[str, Any]:
+    counted: list[Path] = []
+
+    def owned_bytes(directories: Sequence[Path]) -> int:
+        total = 0
+        for directory in directories:
+            resolved = directory.expanduser().resolve()
+            if any(resolved == seen or seen in resolved.parents for seen in counted):
+                continue
+            counted.append(resolved)
+            total += _directory_bytes(resolved)
+        return total
+
+    entries: list[dict[str, Any]] = []
+    for job in jobs:
+        output_dirs = dict.fromkeys(
+            Path(result.job_dir) for result in job.results if result.job_dir
+        )
+        upload_bytes = owned_bytes(_job_upload_dirs(job, staging_dir))
+        output_bytes = owned_bytes(tuple(output_dirs))
+        entries.append(
+            {
+                "id": job.id,
+                "state": job.state,
+                "inputs": [path.name for path in job.inputs],
+                "upload_bytes": upload_bytes,
+                "output_bytes": output_bytes,
+                "total_bytes": upload_bytes + output_bytes,
+            }
+        )
+    upload_total = sum(entry["upload_bytes"] for entry in entries)
+    output_total = sum(entry["output_bytes"] for entry in entries)
+    grand_total = upload_total + output_total
+    for entry in entries:
+        entry["share"] = round(entry["total_bytes"] / grand_total, 4) if grand_total > 0 else 0.0
+    entries.sort(key=lambda entry: entry["total_bytes"], reverse=True)
+    return {
+        "total_bytes": grand_total,
+        "upload_bytes": upload_total,
+        "output_bytes": output_total,
+        "jobs": entries,
+    }
+
+
+def _media_response(path: Path) -> FileResponse:
+    return FileResponse(
+        path,
+        media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        filename=path.name,
+    )
 
 
 def _sweep_staging(staging_dir: Path, keep: frozenset[Path]) -> None:

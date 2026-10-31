@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from speechloom.errors import (
+    ArtifactConflictError,
     ConfigurationError,
     DuplicateJobError,
     JobNotFoundError,
@@ -64,6 +65,15 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(MediaError)
     async def invalid_job(request: Request, exc: Exception) -> JSONResponse:
         return _response(request, 422, "invalid_job", str(exc))
+
+    @app.exception_handler(ArtifactConflictError)
+    async def artifact_conflict(request: Request, exc: ArtifactConflictError) -> JSONResponse:
+        return _response(
+            request,
+            409,
+            "artifact_conflict",
+            "The job's artifacts cannot be changed in their current state",
+        )
 
     @app.exception_handler(Exception)
     async def internal_error(request: Request, exc: Exception) -> JSONResponse:
