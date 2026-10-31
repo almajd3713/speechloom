@@ -209,6 +209,8 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertIn("id: 1", event_text)
                     self.assertIn("event: completed", event_text)
+                    self.assertIn('"media_seconds": null', event_text)
+                    self.assertIn('"estimated_seconds": null', event_text)
 
                     artifacts = (
                         await client.get(f"/v1/jobs/{job_id}/artifacts")

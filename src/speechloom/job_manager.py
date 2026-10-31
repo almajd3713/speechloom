@@ -6,11 +6,13 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import queue
+import statistics
 import threading
 import time
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from .artifacts import atomic_write_json, read_json
 from .contracts import CancellationController, CancellationToken, StageEvent, TranscriptionRequest
@@ -25,6 +27,7 @@ from .media import discover_inputs
 
 
 TERMINAL_STATES = {"completed", "failed", "cancelled", "interrupted"}
+_SPEED_SAMPLES = 5
 
 
 class _TranscriptionService(Protocol):
@@ -131,6 +134,7 @@ class JobManager:
         self._condition = threading.Condition(threading.RLock())
         self._records: dict[str, _JobRecord] = {}
         self._active_mutations: dict[str, str] = {}
+        self._speeds: list[tuple[str, float]] = []
         self._queue: queue.Queue[_JobRecord | None] = queue.Queue(maxsize=queue_size)
         self._inference_slots = threading.Semaphore(inference_slots)
         self._closed = False
@@ -329,6 +333,9 @@ class JobManager:
             )
             with self._condition:
                 record.results = tuple(results)
+                for result in results:
+                    if result.state == "completed" and not result.skipped:
+                        self._learn_speed(Path(result.job_dir) / "manifest.json")
                 if record.controller.is_cancelled() or any(
                     result.state == "cancelled" for result in results
                 ):
@@ -365,7 +372,32 @@ class JobManager:
     def _record_event(self, job_id: str, event: StageEvent) -> None:
         with self._condition:
             record = self._record(job_id)
-            self._publish_locked(record, replace(event, job_id=job_id))
+            self._publish_locked(
+                record, replace(event, job_id=job_id, estimated_seconds=self._estimate(event))
+            )
+
+    def _estimate(self, event: StageEvent) -> float | None:
+        if (
+            event.stage != "transcribing"
+            or event.status != "started"
+            or not event.media_seconds
+            or event.media_seconds <= 0
+            or not self._speeds
+        ):
+            return None
+        newest = sorted(self._speeds)[-_SPEED_SAMPLES:]
+        speed = statistics.median(value for _, value in newest)
+        return max(0.1, round(event.media_seconds / speed, 1))
+
+    def _learn_speed(self, manifest_path: Path, manifest: dict[str, Any] | None = None) -> None:
+        if manifest is None:
+            try:
+                manifest = read_json(manifest_path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                return
+        sample = _manifest_speed(manifest)
+        if sample is not None:
+            self._speeds.append((str(manifest.get("updated_at", "")), sample))
 
     def _publish_locked(self, record: _JobRecord, event: StageEvent) -> None:
         record.current_stage = event.stage
@@ -442,7 +474,26 @@ class JobManager:
                     )
                 )
                 record.next_event_id = 2
+                if state == "completed":
+                    self._learn_speed(manifest_path, manifest)
                 self._records.setdefault(job_id, record)
+
+
+def _manifest_speed(manifest: dict[str, Any]) -> float | None:
+    """Media seconds per inference second, or None when the manifest cannot say."""
+    try:
+        media = manifest["media"]["duration"]
+        timings = manifest["timings"]
+        if "inference_seconds" in timings:
+            inference = timings["inference_seconds"]
+        else:
+            inference = timings["batch_inference_seconds"] / timings["batch_size"]
+        speed = media / inference
+    except (KeyError, TypeError, ZeroDivisionError):
+        return None
+    if not math.isfinite(speed) or speed <= 0:
+        return None
+    return speed
 
 
 def _snapshot(record: _JobRecord) -> ManagedJob:

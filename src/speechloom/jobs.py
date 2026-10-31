@@ -201,6 +201,7 @@ class Pipeline:
             message=message,
             completed=completed,
             total=total,
+            media_seconds=prepared.duration if prepared is not None else None,
         )
         with self._event_lock:
             self._on_event(event)

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import speechloom
+from speechloom import StageEvent
 from speechloom.artifacts import sha256_file
 from speechloom.jobs import EDITED_ARTIFACTS, Pipeline, PipelineOptions, inspect_job
 from speechloom.process import CommandResult
@@ -203,6 +204,31 @@ class PipelineContractTests(unittest.TestCase):
             self.assertEqual(len(nemo_calls), 1)
             self.assertIn("--format", nemo_calls[0])
             self.assertNotIn("shell=True", repr(nemo_calls[0]))
+
+    def test_events_carry_media_seconds_once_the_duration_is_known(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "parakeet.gguf"
+            model.write_bytes(b"model")
+            for workers, names in ((1, ["solo.mp4"]), (2, ["a.mp4", "b.mp4"])):
+                sources = [root / f"{workers}-{name}" for name in names]
+                for source in sources:
+                    source.write_bytes(b"media")
+                events: list[StageEvent] = []
+                pipeline = Pipeline(
+                    PipelineOptions(output_dir=root / f"out{workers}", model=model, workers=workers),
+                    runner=FakeTools(),
+                    on_event=events.append,
+                )
+
+                pipeline.run(sources)
+
+                by_stage = {(e.stage, e.status): e for e in events if e.job_id is not None}
+                self.assertEqual(by_stage[("transcribing", "started")].media_seconds, 3.0)
+                self.assertEqual(by_stage[("completed", "completed")].media_seconds, 3.0)
+                self.assertTrue(all(e.estimated_seconds is None for e in events))
+                queued = [e for e in events if e.stage == "queued"]
+                self.assertTrue(queued and all(e.media_seconds is None for e in queued))
 
     def test_shared_model_batch_invokes_native_runtime_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

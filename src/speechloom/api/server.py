@@ -792,6 +792,8 @@ def _event_payload(item: JobEvent) -> dict[str, Any]:
         "completed": event.completed,
         "total": event.total,
         "timestamp": event.timestamp,
+        "media_seconds": event.media_seconds,
+        "estimated_seconds": event.estimated_seconds,
     }
 
 

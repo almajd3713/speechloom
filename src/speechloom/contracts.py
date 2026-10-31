@@ -59,6 +59,8 @@ class StageEvent:
     completed: int | None = None
     total: int | None = None
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    media_seconds: float | None = None
+    estimated_seconds: float | None = None
 
 
 @runtime_checkable
