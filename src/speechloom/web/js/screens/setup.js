@@ -1,6 +1,6 @@
 import { h, replace } from '../dom.js';
 import { isSetupEnd } from '../events.js';
-import { BACKENDS, FEATURES, checkTone, logLine, summarize } from '../setup-view.js';
+import { BACKENDS, FEATURES, checkTone, isInstalled, logLine, summarize } from '../setup-view.js';
 
 export function mount(container, { api, capabilities, refreshCapabilities }) {
   const controller = new AbortController();
@@ -14,7 +14,11 @@ export function mount(container, { api, capabilities, refreshCapabilities }) {
   const runLine = h('p', { class: 'muted', role: 'status' });
   const cancelButton = h('button', { type: 'button', hidden: true, onclick: cancel }, 'Cancel setup');
   const backend = h('select', { 'aria-label': 'Backend' }, BACKENDS.map((name) => h('option', { value: name }, name === 'auto' ? 'Automatic (recommended)' : name.toUpperCase())));
-  const boxes = FEATURES.map((feature) => ({ feature, input: h('input', { type: 'checkbox', value: feature.name }) }));
+  const boxes = FEATURES.map((feature) => ({
+    feature,
+    input: h('input', { type: 'checkbox', value: feature.name }),
+    note: h('span', { class: 'muted' }),
+  }));
   const fromSource = h('input', { type: 'checkbox' });
   const keepCache = h('input', { type: 'checkbox' });
   const start = h('button', { type: 'submit', class: 'primary' }, 'Install or update');
@@ -32,13 +36,25 @@ export function mount(container, { api, capabilities, refreshCapabilities }) {
         h('dt', {}, 'Backend'), h('dd', {}, status.backend ?? 'unknown'),
         h('dt', {}, 'Features'), h('dd', {}, status.features.length ? status.features.join(', ') : 'speech recognition only'),
         h('dt', {}, 'Models'), h('dd', {}, status.models.length ? status.models.join(', ') : 'none')) : null);
+    paintFeatures();
   };
-  const unsubscribe = capabilities.subscribe(paintSummary);
+  const paintFeatures = () => {
+    for (const { feature, input, note } of boxes) {
+      const installed = isInstalled(feature, lastStatus.value, capabilities.get());
+      input.disabled = installed || running;
+      if (installed) input.checked = false;
+      replace(note, installed ? 'Installed, no need to download it again.' : `(${feature.detail})`);
+      note.className = installed ? 'tone-ok' : 'muted';
+    }
+  };
+  const unsubscribe = capabilities.subscribe(() => { paintSummary(); paintFeatures(); });
 
   function setRunning(value) {
     running = value;
     start.disabled = value;
     doctorButton.disabled = value;
+    for (const { input } of boxes) if (value) input.disabled = true;
+    if (!value) paintFeatures();
     cancelButton.hidden = !value;
     if (value) replace(doctorBox);
   }
@@ -124,7 +140,7 @@ export function mount(container, { api, capabilities, refreshCapabilities }) {
 
   const form = h('form', { onsubmit: submit },
     h('div', { class: 'row' }, h('label', {}, 'Backend ', backend)),
-    h('div', { class: 'row' }, boxes.map(({ feature, input }) => h('label', {}, input, ` ${feature.label} `, h('span', { class: 'muted' }, `(${feature.detail})`)))),
+    h('div', { class: 'row' }, boxes.map(({ feature, input, note }) => h('label', {}, input, ` ${feature.label} `, note))),
     h('details', {}, h('summary', {}, 'Advanced'),
       h('div', { class: 'row' }, h('label', {}, fromSource, ' Build the engine from source (needs a compiler)')),
       h('div', { class: 'row' }, h('label', {}, keepCache, ' Keep download caches'))),

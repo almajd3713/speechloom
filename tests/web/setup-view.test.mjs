@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { checkTone, logLine, summarize } from '../../src/speechloom/web/js/setup-view.js';
+import { checkTone, isInstalled, logLine, summarize } from '../../src/speechloom/web/js/setup-view.js';
 
 const caps = (transcription) => ({ features: { transcription } });
 const status = (extra = {}) => ({ installed: true, ready: true, issues: [], features: [], models: [], ...extra });
@@ -39,4 +39,12 @@ test('diagnostic tones and log lines', () => {
   assert.equal(checkTone('error'), 'error');
   assert.match(logLine({ message: 'installing ASR model', timestamp: '2026-01-01T00:00:00Z' }), /installing ASR model$/);
   assert.equal(logLine({ message: 'x', timestamp: 'bad' }), 'x');
+});
+
+test('a feature counts as installed from setup\'s record or a working configuration', () => {
+  const diarization = { name: 'diarization' };
+  assert.equal(isInstalled(diarization, { features: ['diarization'] }, null), true);
+  assert.equal(isInstalled(diarization, null, { features: { diarization: true } }), true);
+  assert.equal(isInstalled(diarization, { features: [] }, { features: { diarization: false } }), false);
+  assert.equal(isInstalled(diarization, null, null), false);
 });

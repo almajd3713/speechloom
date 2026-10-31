@@ -25,6 +25,11 @@ export function summarize(status, capabilities) {
   return { headline: 'Installed and ready', notes, tone: 'ok' };
 }
 
+// Whether a feature is already in place, by setup's record or by a working configuration.
+export function isInstalled(feature, status, capabilities) {
+  return (status?.features ?? []).includes(feature.name) || capabilities?.features?.[feature.name] === true;
+}
+
 export function logLine(event) {
   const time = new Date(event.timestamp);
   const stamp = Number.isNaN(time.getTime()) ? '' : `${time.toLocaleTimeString()}  `;
