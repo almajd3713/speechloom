@@ -7,8 +7,13 @@ from dataclasses import asdict
 import json
 import os
 from pathlib import Path
+import socket
 import sys
-from typing import Any, Sequence
+import threading
+import time
+from typing import Any, Callable, Sequence
+import urllib.request
+import webbrowser
 
 from . import __version__
 from .config import Settings, load_managed_settings
@@ -108,6 +113,20 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--max-upload-mb", type=int, default=2048)
     serve.add_argument("--queue-size", type=int, default=16)
     serve.add_argument("--media-workers", type=int, default=2)
+
+    gui = subparsers.add_parser("gui", help="Open the local web interface in your browser")
+    gui.add_argument("--port", type=int, default=8765)
+    gui.add_argument(
+        "--allow-root",
+        action="append",
+        type=Path,
+        default=[],
+        help="Let the interface use local paths below this root (repeatable)",
+    )
+    gui.add_argument("--max-upload-mb", type=int, default=2048)
+    gui.add_argument(
+        "--no-browser", action="store_true", help="Do not open the interface in a browser"
+    )
     return parser
 
 
@@ -133,6 +152,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _inspect(args, TranscriptionService(Settings()))
         if args.command == "serve":
             return _serve(args)
+        if args.command == "gui":
+            return _gui(args)
         cli_values = _settings_cli_values(args)
         settings = load_managed_settings(config_path=args.config, cli_values=cli_values)
         service = TranscriptionService(
@@ -281,13 +302,19 @@ def _inspect(args: argparse.Namespace, service: TranscriptionService) -> int:
     return 0
 
 
-def _serve(args: argparse.Namespace) -> int:
+def _import_server():
     try:
-        from .api.server import ServerSettings, run_server
+        from .api import server
     except ImportError as exc:
         raise MissingDependencyError(
             'The HTTP API requires: python -m pip install "speechloom[api]"'
         ) from exc
+    return server
+
+
+def _serve(args: argparse.Namespace) -> int:
+    server = _import_server()
+    ServerSettings, run_server = server.ServerSettings, server.run_server
 
     if not 1 <= args.port <= 65535:
         raise ConfigurationError("--port must be between 1 and 65535")
@@ -317,3 +344,72 @@ def _settings_cli_values(args: argparse.Namespace) -> dict[str, Any]:
         "output_dir", "workers", "shared_model", "keep_audio", "resume", "formats",
     )
     return {name: getattr(args, name, None) for name in names}
+
+
+def _gui(args: argparse.Namespace) -> int:
+    server = _import_server()
+    if not 1 <= args.port <= 65535:
+        raise ConfigurationError("--port must be between 1 and 65535")
+    if args.max_upload_mb < 1:
+        raise ConfigurationError("--max-upload-mb must be at least 1")
+    if not _port_is_free(args.port):
+        raise ConfigurationError(
+            f"Port {args.port} is already in use; choose another with --port"
+        )
+    url = f"http://127.0.0.1:{args.port}/ui/"
+    threading.Thread(
+        target=_open_when_ready,
+        args=(url, f"http://127.0.0.1:{args.port}/v1/health", args.no_browser),
+        daemon=True,
+    ).start()
+    server.run_server(
+        server.ServerSettings(
+            port=args.port,
+            allowed_roots=tuple(args.allow_root),
+            max_upload_bytes=args.max_upload_mb * 1024 * 1024,
+        ),
+        config_path=args.config,
+    )
+    return 0
+
+
+def _port_is_free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _open_when_ready(
+    url: str,
+    health_url: str,
+    no_browser: bool,
+    *,
+    opener: Callable[[str], bool] = webbrowser.open,
+    timeout: float = 60.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while not _answers(health_url):
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.2)
+    if no_browser:
+        print(f"Speechloom is running at {url}", flush=True)
+        return
+    try:
+        opened = opener(url)
+    except Exception:
+        opened = False
+    if not opened:
+        print(f"Open {url} in your browser.", flush=True)
+
+
+def _answers(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=2) as response:
+            return bool(response.status == 200)
+    except OSError:
+        return False

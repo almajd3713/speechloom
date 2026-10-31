@@ -87,6 +87,51 @@ class CapabilitiesResponse(BaseModel):
     formats: list[str]
     asr_languages: list[str]
     translation_languages: list[str]
+    max_upload_bytes: int
+
+
+class SetupStartRequest(BaseModel):
+    backend: str = "auto"
+    features: list[str] = Field(default_factory=list)
+    from_source: bool = False
+    keep_cache: bool = False
+
+
+class SetupRunRequestResponse(BaseModel):
+    backend: str
+    features: list[str]
+    from_source: bool
+    keep_cache: bool
+
+
+class SetupRunResponse(BaseModel):
+    id: str
+    state: str
+    request: SetupRunRequestResponse
+    started_at: str
+    finished_at: str | None
+    current_stage: str
+    message: str
+    error: str | None
+    ready: bool | None
+    actions: list[str]
+
+
+class SetupResponse(BaseModel):
+    status: dict[str, Any] | None
+    task: SetupRunResponse | None
+
+
+class DoctorCheckResponse(BaseModel):
+    name: str
+    status: str
+    message: str
+    details: Any = None
+
+
+class DoctorResponse(BaseModel):
+    ready: bool
+    checks: list[DoctorCheckResponse]
 
 
 class StorageJobResponse(BaseModel):

@@ -42,7 +42,7 @@ def run_doctor(
         ("ffprobe", settings.ffprobe),
         ("nemo-speech", settings.nemo_speech),
     ):
-        resolved = _resolve_executable(executable)
+        resolved = resolve_executable(executable)
         if resolved is None:
             checks.append(Check(name, "error", f"Executable not found: {executable}"))
             continue
@@ -88,7 +88,7 @@ def run_doctor(
             )
         )
 
-    if _resolve_executable(settings.nemo_speech):
+    if resolve_executable(settings.nemo_speech):
         result = runner([settings.nemo_speech, "doctor", "--json"], check=False)
         details = _maybe_json(result.stdout)
         checks.append(
@@ -135,7 +135,7 @@ def run_doctor(
             )
 
     if settings.device.startswith("cuda"):
-        if _resolve_executable("nvidia-smi") is None:
+        if resolve_executable("nvidia-smi") is None:
             checks.append(Check("cuda", "error", "CUDA requested but nvidia-smi is unavailable"))
         else:
             result = runner(
@@ -170,7 +170,7 @@ def run_doctor(
     return DoctorReport(ready, tuple(checks))
 
 
-def _resolve_executable(executable: str) -> Path | None:
+def resolve_executable(executable: str) -> Path | None:
     if os.sep in executable:
         path = Path(executable).expanduser()
         return path.resolve() if path.is_file() and os.access(path, os.X_OK) else None

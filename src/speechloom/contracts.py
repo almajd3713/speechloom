@@ -59,6 +59,8 @@ class StageEvent:
     completed: int | None = None
     total: int | None = None
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    media_seconds: float | None = None
+    estimated_seconds: float | None = None
 
 
 @runtime_checkable
@@ -156,6 +158,7 @@ class ServiceCapabilities:
     formats: tuple[str, ...]
     asr_languages: tuple[str, ...]
     translation_languages: tuple[str, ...]
+    transcription: bool = False
 
 
 @dataclass(frozen=True)

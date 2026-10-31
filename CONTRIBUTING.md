@@ -27,6 +27,17 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests
 .venv/bin/mypy
 ```
 
+The web interface in `src/speechloom/web/` is plain ES modules with no build step and no
+`package.json`. Its checks need Node 24 or newer, and CI runs them in the `web` job:
+
+```bash
+find src/speechloom/web -name '*.js' -print0 | xargs -0 -n1 node --check
+node --test 'tests/web/*.test.mjs'
+```
+
+Keep logic that needs no DOM (parsing, progress maths, edit rules) in modules that Node can
+import. Never build markup from strings: text goes in through `h()` and text nodes.
+
 The real-runtime tests in `tests/integration/` run only when `SPEECHLOOM_TEST_NEMO`,
 `SPEECHLOOM_TEST_MODEL` and `SPEECHLOOM_TEST_MEDIA` point at an engine, a model and a
 media file.

@@ -19,7 +19,7 @@ from .contracts import (
     StageEvent,
     TranscriptionRequest,
 )
-from .doctor import DoctorReport, run_doctor
+from .doctor import DoctorReport, resolve_executable, run_doctor
 from .errors import ArtifactConflictError, ConfigurationError
 from .fingerprints import FINGERPRINT_CACHE_FILENAME
 from .jobs import (
@@ -70,6 +70,10 @@ class TranscriptionService:
             fingerprint_cache=AppPaths.from_environment(env).cache_dir
             / FINGERPRINT_CACHE_FILENAME,
         )
+
+    def replace_settings(self, settings: Settings) -> None:
+        """Use ``settings`` for jobs and diagnostics that start from now on."""
+        self._settings = settings
 
     def transcribe(
         self,
@@ -131,6 +135,8 @@ class TranscriptionService:
             formats=("json", "txt", "srt", "vtt"),
             asr_languages=ASR_LANGUAGES,
             translation_languages=TRANSLATION_LANGUAGES if translation else (),
+            transcription=_model_installed(settings.model)
+            and resolve_executable(settings.nemo_speech) is not None,
         )
 
     def save_edits(

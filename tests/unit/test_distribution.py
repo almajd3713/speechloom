@@ -40,6 +40,7 @@ class DistributionValidationTests(unittest.TestCase):
             "speechloom/cli.py": b"",
             "speechloom/api/server.py": b"",
             "speechloom/data/registry.json": b"{}",
+            "speechloom/web/index.html": b"<!doctype html>",
             "speechloom/py.typed": b"",
             "speechloom-0.1.0.dist-info/licenses/LICENSE": b"MIT",
             "speechloom-0.1.0.dist-info/METADATA": (
@@ -67,6 +68,7 @@ class DistributionValidationTests(unittest.TestCase):
             "scripts/bootstrap_runtime.sh": b"#!/bin/sh",
             "src/speechloom/api/server.py": b"",
             "src/speechloom/data/registry.json": b"{}",
+            "src/speechloom/web/index.html": b"<!doctype html>",
             "src/speechloom/py.typed": b"",
         }
         with tarfile.open(path, mode="w:gz") as archive:

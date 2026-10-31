@@ -318,6 +318,26 @@ class TranscriptionServiceTests(unittest.TestCase):
             self.assertTrue(second.skipped)
             self.assertEqual(hashing.call_count, 0)
 
+    def test_transcription_needs_both_the_model_file_and_the_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = root / "nemo-speech"
+            engine.write_text("#!/bin/sh\n", encoding="utf-8")
+            engine.chmod(0o755)
+            model = root / "model.gguf"
+
+            def ready(model_path: Path | None, engine_path: Path) -> bool:
+                settings = Settings(
+                    model=str(model_path) if model_path else None, nemo_speech=str(engine_path)
+                )
+                return TranscriptionService(settings).capabilities().transcription
+
+            self.assertFalse(ready(model, engine))  # model file missing
+            model.write_bytes(b"model")
+            self.assertTrue(ready(model, engine))
+            self.assertFalse(ready(model, root / "absent"))  # engine missing
+            self.assertFalse(ready(None, engine))  # no model configured
+
     def test_service_reports_installed_features(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

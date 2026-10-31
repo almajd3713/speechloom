@@ -45,6 +45,20 @@ jobs:
       - name: Mypy
         run: mypy
 
+  web:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Check module syntax
+        run: find src/speechloom/web -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Run interface unit tests
+        run: node --test 'tests/web/*.test.mjs'
+
   distribution:
     runs-on: ubuntu-22.04
     steps:
@@ -99,6 +113,7 @@ jobs:
           PIP_NO_INDEX=1 /tmp/speechloom-api/bin/python \
             scripts/verify_offline_import.py speechloom speechloom.api fastapi
           PIP_NO_INDEX=1 /tmp/speechloom-api/bin/speechloom serve --help
+          PIP_NO_INDEX=1 /tmp/speechloom-api/bin/speechloom gui --help
           test ! -e /tmp/speechloom-api-state
       - uses: actions/upload-artifact@v7
         with:

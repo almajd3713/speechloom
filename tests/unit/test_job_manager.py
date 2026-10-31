@@ -265,5 +265,173 @@ class JobManagerTests(unittest.TestCase):
                 manager.close()
 
 
+
+def _manifest(
+    root: Path,
+    name: str,
+    *,
+    media: object = 20.0,
+    timings: dict[str, object] | None = None,
+    state: str = "completed",
+    updated_at: str = "2026-01-01T00:00:00+00:00",
+) -> Path:
+    path = root / name / "manifest.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "job_id": name.ljust(64, "0"),
+                "state": state,
+                "created_at": updated_at,
+                "updated_at": updated_at,
+                "source": {"path": str(root / f"{name}.wav")},
+                "media": {"duration": media},
+                "timings": {"inference_seconds": 10.0} if timings is None else timings,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path.parent
+
+
+class EstimateService:
+    """Finishes instantly, announcing each file's duration and writing its manifest."""
+
+    def __init__(self, root: Path, outcomes: dict[str, dict[str, object]] | None = None) -> None:
+        self._root = root
+        self._outcomes = outcomes or {}
+
+    def transcribe(self, request, *, on_event=None, cancellation=None, inference_gate=None):
+        del cancellation, inference_gate
+        results = []
+        for source in request.inputs:
+            outcome = self._outcomes.get(source.stem, {})
+            job_dir = _manifest(
+                self._root / "out",
+                source.stem,
+                media=outcome.get("media", 20.0),
+                timings=outcome.get("timings"),
+                updated_at=str(outcome.get("updated_at", "2026-02-01T00:00:00+00:00")),
+            )
+            if on_event is not None:
+                on_event(
+                    StageEvent(
+                        None,
+                        source,
+                        "transcribing",
+                        "started",
+                        "Transcription started",
+                        media_seconds=float(request_duration(source)),
+                    )
+                )
+            results.append(
+                JobResult(
+                    str(source),
+                    str(job_dir),
+                    str(outcome.get("state", "completed")),
+                    skipped=bool(outcome.get("skipped", False)),
+                )
+            )
+        return results
+
+
+def request_duration(source: Path) -> float:
+    return float(source.stem.rsplit("-", 1)[-1]) if "-" in source.stem else 30.0
+
+
+class EstimateTests(unittest.TestCase):
+    def _run(self, manager: JobManager, path: Path):
+        submitted = manager.submit(_request(path))
+        manager.wait(submitted.id, timeout=2)
+        return [
+            item.event
+            for item in manager.wait_for_events(submitted.id, after=0, timeout=0.1)
+            if item.event.stage == "transcribing"
+        ]
+
+    def test_first_job_has_duration_but_no_estimate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with JobManager(EstimateService(root)) as manager:
+                (event,) = self._run(manager, root / "first-30.wav")
+
+        self.assertEqual(event.media_seconds, 30.0)
+        self.assertIsNone(event.estimated_seconds)
+
+    def test_next_job_is_estimated_from_the_previous_speed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with JobManager(EstimateService(root)) as manager:
+                self._run(manager, root / "first-30.wav")  # 20 s of media in 10 s: speed 2
+                (event,) = self._run(manager, root / "second-30.wav")
+
+        self.assertEqual(event.estimated_seconds, 15.0)
+
+    def test_shared_batch_time_is_split_across_the_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = EstimateService(
+                root,
+                {"first-30": {"timings": {"batch_inference_seconds": 40.0, "batch_size": 4}}},
+            )
+            with JobManager(service) as manager:
+                self._run(manager, root / "first-30.wav")
+                (event,) = self._run(manager, root / "second-30.wav")
+
+        self.assertEqual(event.estimated_seconds, 15.0)
+
+    def test_only_the_newest_five_timed_manifests_count_and_recovery_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # The oldest manifest is an outlier (speed 100); the newest five have speeds 1, 2, 2, 4, 5.
+            for index, (inference, day) in enumerate(
+                [(0.2, 1), (20.0, 2), (10.0, 3), (10.0, 4), (5.0, 5), (4.0, 6)]
+            ):
+                _manifest(
+                    root / "recovered",
+                    f"m{index}",
+                    timings={"inference_seconds": inference},
+                    updated_at=f"2026-01-0{day}T00:00:00+00:00",
+                )
+            with JobManager(EstimateService(root), recovery_roots=(root / "recovered",)) as manager:
+                (event,) = self._run(manager, root / "next-30.wav")
+
+        self.assertEqual(event.estimated_seconds, 15.0)  # median speed 2
+
+    def test_unusable_results_do_not_count(self) -> None:
+        bad_timings: dict[str, dict[str, object]] = {
+            "failed-30": {"state": "failed"},
+            "cancelled-30": {"state": "cancelled"},
+            "skipped-30": {"skipped": True},
+            "nomedia-30": {"media": None},
+            "zeromedia-30": {"media": 0},
+            "zerotime-30": {"timings": {"inference_seconds": 0}},
+            "negtime-30": {"timings": {"inference_seconds": -1.0}},
+            "notime-30": {"timings": {}},
+            "nobatch-30": {"timings": {"batch_inference_seconds": 5.0}},
+            "emptybatch-30": {"timings": {"batch_inference_seconds": 5.0, "batch_size": 0}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with JobManager(EstimateService(root, bad_timings), queue_size=16) as manager:
+                for name in bad_timings:
+                    self._run(manager, root / f"{name}.wav")
+                (event,) = self._run(manager, root / "last-30.wav")
+
+        self.assertIsNone(event.estimated_seconds)
+
+    def test_estimate_is_rounded_and_never_below_a_tenth_of_a_second(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = EstimateService(root, {"first-30": {"media": 30.0, "timings": {"inference_seconds": 7.0}}})
+            with JobManager(service) as manager:
+                self._run(manager, root / "first-30.wav")  # speed 30/7
+                (rounded,) = self._run(manager, root / "second-10.wav")
+                (floored,) = self._run(manager, root / "third-0.001.wav")
+
+        self.assertEqual(rounded.estimated_seconds, 2.3)  # 10 / (30/7) = 2.33
+        self.assertEqual(floored.estimated_seconds, 0.1)
+
+
 if __name__ == "__main__":
     unittest.main()

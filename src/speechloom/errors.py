@@ -31,6 +31,10 @@ class DuplicateJobError(JobManagerError):
     pass
 
 
+class JobActiveError(JobManagerError):
+    pass
+
+
 class ConfigurationError(PipelineError):
     exit_code = 2
 

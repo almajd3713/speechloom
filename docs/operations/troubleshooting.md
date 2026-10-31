@@ -1,5 +1,8 @@
 # Troubleshooting
 
+Problems with `speechloom gui` are covered in the
+[web interface guide](../web-ui.md#when-something-goes-wrong).
+
 ## `speechloom transcribe` says no ASR model is configured
 
 Run `speechloom setup`, then `speechloom setup status`. Status must print `Ready.`; each
