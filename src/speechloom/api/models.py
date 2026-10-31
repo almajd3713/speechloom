@@ -87,6 +87,7 @@ class CapabilitiesResponse(BaseModel):
     formats: list[str]
     asr_languages: list[str]
     translation_languages: list[str]
+    max_upload_bytes: int
 
 
 class StorageJobResponse(BaseModel):

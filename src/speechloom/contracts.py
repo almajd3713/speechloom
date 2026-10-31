@@ -158,6 +158,7 @@ class ServiceCapabilities:
     formats: tuple[str, ...]
     asr_languages: tuple[str, ...]
     translation_languages: tuple[str, ...]
+    transcription: bool = False
 
 
 @dataclass(frozen=True)

@@ -15,14 +15,21 @@ from speechloom.api.errors import ApiError
 from speechloom.api.server import (
     ServerSettings,
     _format_sse_event,
+    _remove_job_files,
     _sweep_staging,
     create_app,
     resolve_output_dir,
 )
 from speechloom.artifacts import sha256_file
-from speechloom.contracts import JobDetails, SegmentEdit, ServiceCapabilities, StageEvent
+from speechloom.contracts import (
+    JobDetails,
+    SegmentEdit,
+    ServiceCapabilities,
+    StageEvent,
+    TranscriptionRequest,
+)
 from speechloom.errors import ArtifactConflictError, ConfigurationError
-from speechloom.job_manager import JobManager
+from speechloom.job_manager import JobManager, ManagedJob
 from speechloom.jobs import JobResult
 from speechloom.languages import ASR_LANGUAGES, TRANSLATION_LANGUAGES
 
@@ -93,6 +100,7 @@ class FixtureService:
             formats=("json", "txt", "srt", "vtt"),
             asr_languages=ASR_LANGUAGES,
             translation_languages=TRANSLATION_LANGUAGES,
+            transcription=True,
         )
 
     def save_edits(self, job, edits, *, merge=False) -> JobDetails:
@@ -562,7 +570,11 @@ class ApiContractTests(unittest.IsolatedAsyncioTestCase):
                     body = response.json()
 
                     self.assertEqual(response.status_code, 200)
-                    self.assertEqual(body["features"], {"diarization": False, "translation": True})
+                    self.assertEqual(
+                        body["features"],
+                        {"diarization": False, "translation": True, "transcription": True},
+                    )
+                    self.assertEqual(body["max_upload_bytes"], 1024 * 1024)
                     self.assertEqual(body["formats"], ["json", "txt", "srt", "vtt"])
                     self.assertEqual(len(body["asr_languages"]), 25)
                     self.assertIn("ar", body["translation_languages"])
@@ -956,6 +968,149 @@ class ServerHelperTests(unittest.TestCase):
         self.assertEqual(resolve_output_dir("transcripts", data), Path("/data/transcripts"))
         self.assertEqual(resolve_output_dir("/srv/out", data), Path("/srv/out"))
         self.assertEqual(resolve_output_dir("~/out", data), Path.home() / "out")
+
+
+class MultiFileService(FixtureService):
+    """Returns one result per input; the first input gets no manifest when asked."""
+
+    def __init__(self, *, skip_first_manifest: bool = False) -> None:
+        super().__init__()
+        self.skip_first_manifest = skip_first_manifest
+
+    def transcribe(self, request, *, on_event=None, cancellation=None, inference_gate=None):
+        results = []
+        for index, source in enumerate(request.inputs):
+            single = TranscriptionRequest(inputs=(source,), output_dir=request.output_dir)
+            result = super().transcribe(
+                single, on_event=on_event, cancellation=cancellation, inference_gate=inference_gate
+            )[0]
+            if index == 0 and self.skip_first_manifest:
+                (Path(result.job_dir) / "manifest.json").unlink()
+            results.append(result)
+        return results
+
+
+class JobFilesTests(unittest.IsolatedAsyncioTestCase):
+    def _app(self, root: Path, service: FixtureService):
+        manager = JobManager(service, queue_size=4, media_workers=1)
+        settings = ServerSettings(
+            allowed_roots=(root,), staging_dir=root / "staging", max_upload_bytes=1024 * 1024
+        )
+        return create_app(service, manager, settings), manager
+
+    async def test_deleting_a_finished_job_removes_its_files_then_the_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, manager = self._app(root, FixtureService())
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post("/v1/jobs", **_upload("clip.wav"))
+                    job_id = submitted.json()["id"]
+                    await _wait_for_state(client, job_id, "completed")
+                    outputs = list((root / "staging").glob("*/output/job-*"))
+                    self.assertEqual(len(outputs), 1)
+
+                    removed = await client.delete(f"/v1/jobs/{job_id}/files")
+
+                    self.assertEqual(removed.status_code, 204)
+                    self.assertFalse(list((root / "staging").glob("*")))
+                    self.assertEqual((await client.get(f"/v1/jobs/{job_id}")).status_code, 404)
+                    listing = (await client.get("/v1/jobs")).json()
+                    self.assertEqual(listing["total"], 0)
+                    again = await client.delete(f"/v1/jobs/{job_id}/files")
+                    self.assertEqual(again.status_code, 404)
+                    self.assertEqual(again.json()["error"]["code"], "job_not_found")
+            finally:
+                manager.close(cancel=True)
+
+    async def test_active_job_files_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = FixtureService(block=True)
+            app, manager = self._app(root, service)
+            try:
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                ) as client:
+                    submitted = await client.post("/v1/jobs", **_upload("clip.wav"))
+                    job_id = submitted.json()["id"]
+                    await _wait_until_entered(service)
+
+                    refused = await client.delete(f"/v1/jobs/{job_id}/files")
+
+                    self.assertEqual(refused.status_code, 409)
+                    self.assertEqual(refused.json()["error"]["code"], "job_active")
+                    self.assertEqual((await client.get(f"/v1/jobs/{job_id}")).status_code, 200)
+                    self.assertEqual(len(list((root / "staging").glob("*/001-clip.wav"))), 1)
+            finally:
+                service.release.set()
+                manager.close(cancel=True)
+
+    def test_directories_without_a_manifest_or_used_by_another_job_are_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staging = root / "staging"
+            owned, shared, bare = root / "owned", root / "shared", root / "bare"
+            for path in (owned, shared):
+                path.mkdir()
+                (path / "manifest.json").write_text("{}", encoding="utf-8")
+            bare.mkdir()
+            upload = staging / ("a" * 32)
+            upload.mkdir(parents=True)
+            media = upload / "001-clip.wav"
+            media.write_bytes(b"media")
+
+            def job(job_id: str, dirs: list[Path], inputs: tuple[Path, ...] = ()) -> ManagedJob:
+                return ManagedJob(
+                    job_id,
+                    "completed",
+                    inputs,
+                    "now",
+                    results=tuple(JobResult("", str(path), "completed") for path in dirs),
+                )
+
+            _remove_job_files(
+                job("one", [owned, shared, bare], (media,)), [job("two", [shared])], staging
+            )
+
+            self.assertFalse(owned.exists())
+            self.assertFalse(upload.exists())
+            self.assertTrue(shared.is_dir())
+            self.assertTrue(bare.is_dir())
+
+    async def test_artifact_names_follow_result_position(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for skip_first in (False, True):
+                run = root / f"run-{skip_first}"
+                run.mkdir()
+                sources = [run / "a.wav", run / "b.wav", run / "c.wav"]
+                for source in sources:
+                    source.write_bytes(b"media")
+                service = MultiFileService(skip_first_manifest=skip_first)
+                app, manager = self._app(run, service)
+                try:
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8765"
+                    ) as client:
+                        submitted = await client.post(
+                            "/v1/jobs",
+                            json={"inputs": [str(path) for path in sources], "formats": ["txt"]},
+                        )
+                        self.assertEqual(submitted.status_code, 202, submitted.text)
+                        job_id = submitted.json()["id"]
+                        await _wait_for_state(client, job_id, "completed")
+
+                        items = (await client.get(f"/v1/jobs/{job_id}/artifacts")).json()["items"]
+
+                        self.assertEqual(
+                            [item["name"] for item in items],
+                            ["2.txt", "3.txt"] if skip_first else ["1.txt", "2.txt", "3.txt"],
+                        )
+                finally:
+                    manager.close(cancel=True)
 
 
 if __name__ == "__main__":

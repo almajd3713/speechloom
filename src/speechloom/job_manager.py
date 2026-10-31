@@ -19,6 +19,7 @@ from .contracts import CancellationController, CancellationToken, StageEvent, Tr
 from .errors import (
     CancellationError,
     DuplicateJobError,
+    JobActiveError,
     JobNotFoundError,
     JobQueueFullError,
 )
@@ -273,6 +274,15 @@ class JobManager:
                 record,
                 StageEvent(job_id, None, "cancelled", status, message),
             )
+            return _snapshot(record)
+
+    def forget(self, job_id: str) -> ManagedJob:
+        """Drop a finished job from the manager and return its last snapshot."""
+        with self._condition:
+            record = self._record(job_id)
+            if record.state not in TERMINAL_STATES:
+                raise JobActiveError(f"Job is still active: {job_id}")
+            del self._records[job_id]
             return _snapshot(record)
 
     def close(self, *, wait: bool = True, cancel: bool = False) -> None:

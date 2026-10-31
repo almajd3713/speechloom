@@ -157,10 +157,12 @@ def create_app(
             "features": {
                 "diarization": reported.diarization,
                 "translation": reported.translation,
+                "transcription": reported.transcription,
             },
             "formats": list(reported.formats),
             "asr_languages": list(reported.asr_languages),
             "translation_languages": list(reported.translation_languages),
+            "max_upload_bytes": settings.max_upload_bytes,
         }
 
     @app.get(
@@ -302,6 +304,19 @@ def create_app(
             raise ApiError(404, "upload_not_found", "This job has no stored upload")
         for directory in directories:
             shutil.rmtree(directory, ignore_errors=True)
+        return Response(status_code=204)
+
+    @app.delete(
+        "/v1/jobs/{job_id}/files",
+        status_code=204,
+        responses=ERROR_RESPONSES,
+        tags=["jobs"],
+    )
+    async def delete_job_files(job_id: str) -> Response:
+        manager.get(job_id)
+        job = manager.forget(job_id)
+        remaining = manager.list(offset=0, limit=max(1, manager.count()))
+        await asyncio.to_thread(_remove_job_files, job, remaining, staging_dir)
         return Response(status_code=204)
 
     @app.get(
@@ -636,6 +651,31 @@ def _job_upload_dirs(job: ManagedJob, staging_dir: Path) -> tuple[Path, ...]:
     return tuple(directories)
 
 
+def _remove_job_files(
+    job: ManagedJob, others: Sequence[ManagedJob], staging_dir: Path
+) -> None:
+    """Remove a forgotten job's upload and output directories that no other job uses."""
+    in_use: set[Path] = set()
+    for other in others:
+        in_use.update(Path(result.job_dir).expanduser().resolve() for result in other.results if result.job_dir)
+        in_use.update(directory.resolve() for directory in _job_upload_dirs(other, staging_dir))
+    outputs = (
+        Path(result.job_dir).expanduser().resolve()
+        for result in job.results
+        if result.job_dir
+    )
+    doomed = [
+        directory
+        for directory in (
+            *(directory.resolve() for directory in _job_upload_dirs(job, staging_dir)),
+            *(directory for directory in outputs if (directory / "manifest.json").is_file()),
+        )
+        if directory not in in_use
+    ]
+    for directory in dict.fromkeys(doomed):
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _result_job_dir(job: ManagedJob, result: int) -> Path:
     if 1 <= result <= len(job.results) and job.results[result - 1].job_dir:
         return Path(job.results[result - 1].job_dir)
@@ -810,17 +850,17 @@ def _artifact_catalog(
     service: TranscriptionService,
     job: ManagedJob,
 ) -> dict[str, _Artifact]:
-    manifests: list[tuple[Path, JobDetails]] = []
-    for result in job.results:
+    manifests: list[tuple[int, Path, JobDetails]] = []
+    for position, result in enumerate(job.results, start=1):
         job_dir = Path(result.job_dir).expanduser().resolve()
         try:
             details = service.inspect(job_dir)
         except Exception:
             continue
-        manifests.append((job_dir, details))
+        manifests.append((position, job_dir, details))
     catalog: dict[str, _Artifact] = {}
-    multiple = len(manifests) > 1
-    for index, (job_dir, details) in enumerate(manifests, start=1):
+    multiple = len(job.results) > 1
+    for index, job_dir, details in manifests:
         for artifact in details.artifacts:
             key = f"{index}.{artifact.name}" if multiple else artifact.name
             path = _manifest_artifact_path(job_dir, artifact)

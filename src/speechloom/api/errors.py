@@ -12,6 +12,7 @@ from speechloom.errors import (
     ArtifactConflictError,
     ConfigurationError,
     DuplicateJobError,
+    JobActiveError,
     JobNotFoundError,
     JobQueueFullError,
     MediaError,
@@ -56,6 +57,10 @@ def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(DuplicateJobError)
     async def duplicate(request: Request, exc: DuplicateJobError) -> JSONResponse:
         return _response(request, 409, "job_conflict", "Job is already active")
+
+    @app.exception_handler(JobActiveError)
+    async def job_active(request: Request, exc: JobActiveError) -> JSONResponse:
+        return _response(request, 409, "job_active", "The job is still active")
 
     @app.exception_handler(JobQueueFullError)
     async def queue_full(request: Request, exc: JobQueueFullError) -> JSONResponse:
