@@ -6,6 +6,15 @@ All notable changes to Speechloom are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `GET /v1/capabilities` reports installed features and supported languages.
+- Transcript edits, saved beside the canonical transcript as `*.edited.*` files:
+  `PUT`, `PATCH` and `DELETE` on `/v1/jobs/{job_id}/edits`, and
+  `TranscriptionService.save_edits` and `clear_edits`.
+- `GET /v1/jobs/{job_id}/media` streams stored media for playback, with range requests.
+- `GET /v1/storage` reports disk use per job and each job's share of the total.
+
 ## [0.1.2] - 2026-10-30
 
 ### Fixed

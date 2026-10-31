@@ -76,6 +76,28 @@ for check in report.checks:
     print(check.status, check.name, check.message)
 ```
 
+## Capabilities
+
+```python
+capabilities = service.capabilities()
+print(capabilities.translation, capabilities.diarization)
+print(capabilities.asr_languages, capabilities.translation_languages)
+```
+
+## Edit a transcript
+
+```python
+from speechloom import SegmentEdit
+
+details = service.save_edits(results[0].job_dir, [SegmentEdit(0, "Corrected first line.")])
+print([artifact.name for artifact in details.artifacts])
+```
+
+Edits are saved as `transcript.edited.*` and `subtitles.edited.*` beside the canonical
+files, which stay unchanged. By default each call replaces all earlier edits; pass
+`merge=True` to add to them instead, where `SegmentEdit(index, None)` restores a
+segment's original text. `service.clear_edits(job_dir)` removes every edit.
+
 ## Background jobs
 
 `speechloom.JobManager` runs requests on worker threads with a bounded queue and a

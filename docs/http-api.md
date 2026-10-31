@@ -52,6 +52,11 @@ send `Authorization: Bearer <token>`.
 | `GET /v1/jobs/{job_id}/events` | Progress as server-sent events; reconnect with `Last-Event-ID` |
 | `GET /v1/jobs/{job_id}/artifacts` | List the job's artifacts |
 | `GET /v1/jobs/{job_id}/artifacts/{name}` | Download one artifact |
+| `PUT /v1/jobs/{job_id}/edits` | Replace all transcript edits of a finished job |
+| `PATCH /v1/jobs/{job_id}/edits` | Merge transcript edits into the existing ones |
+| `DELETE /v1/jobs/{job_id}/edits` | Remove all transcript edits; answers `204` |
+| `GET /v1/jobs/{job_id}/media?result=1` | Stream the stored upload, local source or kept audio for playback |
+| `GET /v1/storage` | Disk use per job and in total, with each job's share |
 
 Every error has the same shape:
 `{"error": {"code": "...", "message": "...", "details": null, "request_id": "..."}}`.
@@ -92,3 +97,47 @@ client deletes them with `DELETE /v1/jobs/{job_id}/upload`, so a front end can r
 the media later. Deletion is refused with `409` and the code `job_active` while the job
 is queued or running. Uploads from rejected submissions are removed immediately, and at
 startup the server removes stored uploads that no known job refers to.
+
+## Capabilities
+
+`GET /v1/capabilities` reports, besides the API version and input modes, which optional
+features are installed (`features.translation`, `features.diarization`), the output
+`formats`, the 25 `asr_languages` Parakeet recognizes, and the `translation_languages`
+(empty when translation is not installed). Use it to decide which options a front end
+shows.
+
+## Transcript edits
+
+```bash
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"segments": [{"index": 0, "text": "Corrected first line."}]}' \
+  "$api/jobs/<job id>/edits"
+```
+
+Edits replace the text of transcript segments, keyed by segment index; timings are
+unchanged. They are written beside the canonical transcript as `transcript.edited.json`,
+`transcript.edited.txt`, `subtitles.edited.srt` and `subtitles.edited.vtt`, listed as
+the artifacts `edited.json`, `edited.txt`, `edited.srt` and `edited.vtt`.
+
+- `PUT` replaces all earlier edits with the segments in the request.
+- `PATCH` merges the request into the earlier edits; a segment whose `text` is `null`
+  goes back to its original text.
+- `DELETE` removes every edit and the edited files.
+
+The canonical `transcript.json` is never changed, and rerunning the job with `force`
+removes the edited files. For a multi-file job, choose the file with `"result": N` in
+the body, or `?result=N` for `DELETE` (1-based).
+
+## Playback
+
+`GET /v1/jobs/{job_id}/media` returns the job's original upload, or its local source
+file when it lies under an `--allow-root` directory, and supports range requests, so a
+player can seek. When neither exists, it returns the 16 kHz audio kept for jobs
+submitted with `"keep_audio": true`, and otherwise `404 media_unavailable`.
+
+## Storage
+
+`GET /v1/storage` reports `total_bytes`, `upload_bytes`, `output_bytes` and the
+filesystem's `free_bytes`, plus one entry per job with its upload and output sizes and
+its `share` of the total (a fraction from 0 to 1). A directory shared by several jobs
+is counted once, for the newest job.
