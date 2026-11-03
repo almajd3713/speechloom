@@ -30,7 +30,7 @@ jobs:
     if: inputs.backend == 'cpu'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install clean-machine prerequisites
@@ -67,7 +67,7 @@ jobs:
     if: inputs.backend == 'cuda'
     runs-on: [self-hosted, Linux, X64, speechloom-cuda]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Verify CUDA host
