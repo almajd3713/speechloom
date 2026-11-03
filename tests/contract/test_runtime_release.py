@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 from speechloom.process import run_command
@@ -30,11 +31,12 @@ class RuntimeReleaseContractTests(unittest.TestCase):
         self.assertIn("scripts/update_runtime_registry.py", workflow)
         self.assertEqual(workflow.count("scripts/verify_runtime_archive.py"), 3)
         self.assertIn("needs: [cpu, cuda, verify]", workflow)
-        self.assertIn("actions/checkout@v6", workflow)
-        self.assertEqual(workflow.count("actions/cache/restore@v5"), 2)
-        self.assertEqual(workflow.count("actions/cache/save@v5"), 2)
-        self.assertIn("actions/upload-artifact@v7", workflow)
-        self.assertIn("actions/download-artifact@v8", workflow)
+        # Dependabot bumps action versions, so check the actions, not their versions.
+        self.assertRegex(workflow, r"actions/checkout@v\d+")
+        self.assertEqual(len(re.findall(r"actions/cache/restore@v\d+", workflow)), 2)
+        self.assertEqual(len(re.findall(r"actions/cache/save@v\d+", workflow)), 2)
+        self.assertRegex(workflow, r"actions/upload-artifact@v\d+")
+        self.assertRegex(workflow, r"actions/download-artifact@v\d+")
         self.assertIn("Restore compiled CUDA runtime", workflow)
         self.assertIn("Save compiled CUDA runtime", workflow)
         self.assertIn("Verify CPU runtime archive", workflow)
